@@ -1,17 +1,24 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 )
 
+const MAX_BACKOFFS = 6
+
+var client = &http.Client{Timeout: 30 * time.Second}
+
 func main() {
+
 	l := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 
 	env := os.Getenv("GO_ENV")
@@ -27,10 +34,41 @@ func main() {
 	godotenv.Load(".env." + env)
 	godotenv.Load()
 
-	nextCursor := ""
-	nextWait := 0
+	nextCursor := os.Getenv("INITIAL_CHANGE_ID")
+	if nextCursor == "" {
+		l.Printf("No change id found in environment; fetching latest id from API\n")
+		var err error
+		nextCursor, err = GetLatestChangeId()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	l.Printf("Starting change id: %s\n", nextCursor)
 
-	buf := make([]byte, 1024*500) // 500KB buffer
+	// Init connection to the database
+	pqCfg := PQConfig{
+		User:     os.Getenv("DB_USER"),
+		Password: os.Getenv("DB_PASS"),
+		Dbname:   os.Getenv("DB_NAME"),
+		Host:     os.Getenv("DB_HOST"),
+		Sslmode:  "verify-full",
+	}
+
+	db, err := DBConnect(&pqCfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	// test the connection
+	var version string
+	if err := db.QueryRow("select version()").Scan(&version); err != nil {
+		log.Fatal(err)
+	}
+	l.Printf("DB connection established; version: %s\n", version)
+
+	nextWaitMs := 0
+	backoffs := 0
 
 	for {
 		url := "https://api.pathofexile.com/public-stash-tabs"
@@ -46,7 +84,6 @@ func main() {
 			log.Fatal(err)
 		}
 
-		client := http.Client{}
 		l.Println("Sending request")
 		resp, err := client.Do(req)
 		if err != nil {
@@ -54,56 +91,94 @@ func main() {
 		}
 		defer resp.Body.Close()
 
+		rateLimitExceeded := false
 		// Handle rate limit
 		if resp.StatusCode == 429 {
-			nextWait, err = strconv.Atoi(resp.Header.Get("Retry-After"))
+			rateLimitExceeded = true
+			retryS, err := strconv.Atoi(resp.Header.Get("Retry-After"))
 			if err != nil {
 				log.Fatal(err)
 			}
+			nextWaitMs = retryS * 1000
 		} else if resp.StatusCode == 200 {
-			nextWait = 0
+			nextWaitMs = 0
 		}
 
-		l.Printf("Response: %s\n", resp.Status)
-		l.Printf("Response: x-rate-limit-ip-state: %s\n", resp.Header.Get("x-rate-limit-ip-state"))
-		l.Printf("Response: x-next-change-id: %s\n", resp.Header.Get("x-next-change-id"))
+		// decode rate limit policy
+		rateLimitRules := strings.Split(resp.Header.Get("x-rate-limit-rules"), ",")
+
+		for _, rule := range rateLimitRules {
+			policyHeader := "x-rate-limit-" + rule
+			policyValues := strings.Split(resp.Header.Get(policyHeader), ":")
+			maxHits, err := strconv.Atoi(policyValues[0])
+			if err != nil {
+				log.Fatal(err)
+			}
+			periodS, err := strconv.Atoi(policyValues[1])
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			ruleIntervalMs := (periodS * 1000) / maxHits
+
+			if ruleIntervalMs > nextWaitMs {
+				nextWaitMs = ruleIntervalMs
+			}
+		}
 
 		nextCursor = resp.Header.Get("x-next-change-id")
-		if nextCursor == "" && nextWait == 0 {
+		if nextCursor != "" {
+			l.Printf("Next stash change id: %s\n", nextCursor)
+		}
+		if nextCursor == "" && nextWaitMs == 0 {
 			// We've reached the end, pause the reader (if it hasn't been paused already
-			nextWait = 60
+			l.Printf("No next change id\n")
+			nextWaitMs = 60
 		}
 
-		// TODO: implement json decoder
+		decodeStart := time.Now()
+		tabs, decodeErr := FindFFJewels(resp.Body, l)
+		if decodeErr != nil && decodeErr != io.EOF {
+			log.Fatal(decodeErr)
+		}
+		decodeEnd := time.Since(decodeStart)
 
-		bytesRead := 0
-		chunkNum := 0
+		l.Printf("Response: processed %d stash tabs in %s\n", len(tabs), decodeEnd)
 
-		for {
-			n, err := resp.Body.Read(buf)
-			bytesRead += n
-
-			if err == io.EOF {
-				break
+		// Slowly back off if we're at the front of the river
+		if len(tabs) == 0 && !rateLimitExceeded {
+			nextWaitMs = nextWaitMs * IntPow(2, backoffs)
+			if backoffs < MAX_BACKOFFS {
+				backoffs++
 			}
-
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			// writeErr := os.WriteFile("data/chunk-"+strconv.Itoa(chunkNum)+".txt", buf[0:bytesRead], 0644)
-			// if writeErr != nil {
-			// 	log.Fatal(writeErr)
-			// }
-			chunkNum++
+		} else if len(tabs) > 0 {
+			backoffs = 0
+			dbStart := time.Now()
+			ctx := context.TODO()
+			// TODO: make this a goroutine? or if it's really slow, add a message broker here
+			UpdateDb(ctx, db, tabs)
+			dbEnd := time.Since(dbStart)
+			l.Printf("Response: database updated in %s\n", dbEnd)
 		}
 
-		l.Printf("Response: bytes read: %d from %d chunks\n", bytesRead, chunkNum)
-
-		if nextWait > 0 {
-			l.Printf("Rate limit reached or caught up to river; waiting %d seconds...\n", nextWait)
-			time.Sleep(time.Duration(nextWait) * time.Second)
+		if nextWaitMs > 0 {
+			waitDuration := time.Duration(nextWaitMs)*time.Millisecond - decodeEnd
+			if waitDuration < 0 {
+				waitDuration = 0
+			}
+			l.Printf("waiting %s...\n", waitDuration)
+			time.Sleep(waitDuration)
 		}
 	}
+}
 
+func IntPow(n, m int) int {
+	if m == 0 {
+		return 1
+	}
+	result := n
+	for i := 2; i <= m; i++ {
+		result *= n
+	}
+	return result
 }
