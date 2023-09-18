@@ -160,7 +160,9 @@ func UpdateDb(ctx context.Context, db *sql.DB, tabs []StashSnapshot) error {
 		}
 	}
 
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 
 	return nil
 }
