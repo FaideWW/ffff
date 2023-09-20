@@ -1,4 +1,4 @@
-package main
+package psapi
 
 import (
 	"context"
@@ -10,21 +10,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
+	db "github.com/faideww/ffff/internal/db"
 )
 
 const MAX_BACKOFFS = 6
 
-var client = &http.Client{Timeout: 30 * time.Second}
-
-func consumeRiver() {
+func ConsumeRiver() {
 	l := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 
+	client := &http.Client{Timeout: 30 * time.Second}
 	nextCursor := os.Getenv("INITIAL_CHANGE_ID")
 	if nextCursor == "" {
 		l.Printf("No change id found in environment; fetching latest id from API\n")
 		var err error
-		nextCursor, err = GetLatestChangeId()
+		nextCursor, err = GetLatestChangeId(client)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -32,7 +31,7 @@ func consumeRiver() {
 	l.Printf("Starting change id: %s\n", nextCursor)
 
 	// Init connection to the database
-	pqCfg := PQConfig{
+	pqCfg := db.PQConfig{
 		User:     os.Getenv("DB_USER"),
 		Password: os.Getenv("DB_PASS"),
 		Dbname:   os.Getenv("DB_NAME"),
@@ -40,32 +39,11 @@ func consumeRiver() {
 		Sslmode:  "verify-full",
 	}
 
-	db, err := DBConnect(&pqCfg)
+	db, err := db.DBConnect(&pqCfg)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
-
-	// stmt, err := db.Prepare("SELECT * FROM jewels WHERE stashId = any($1::text[])")
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// rows, err := stmt.Query([]string{"test", "test", "test"})
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// for rows.Next() {
-	// 	var j DBJewel
-	// 	if err := rows.Scan(&j.Id, &j.JewelType, &j.JewelClass, &j.AllocatedNode, &j.StashX, &j.StashY, &j.ItemId, &j.StashId, &j.ListPriceChaos, &j.ListPriceDivines, &j.RecordedAt); err != nil {
-	// 		log.Fatal(err)
-	// 	}
-
-	// 	l.Printf("%+v\n", j)
-	// }
-
-	// return
 
 	nextWaitMs := 0
 	backoffs := 0
@@ -187,25 +165,4 @@ func IntPow(n, m int) int {
 		result *= n
 	}
 	return result
-}
-
-func loadEnv() {
-	env := os.Getenv("GO_ENV")
-	if env == "" {
-		env = "development"
-	}
-
-	godotenv.Load(".env." + env + ".local")
-	if env != "test" {
-		godotenv.Load(".env.local")
-	}
-
-	godotenv.Load(".env." + env)
-	godotenv.Load()
-
-}
-
-func main() {
-	loadEnv()
-	consumeRiver()
 }

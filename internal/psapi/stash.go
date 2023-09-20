@@ -1,4 +1,4 @@
-package main
+package psapi
 
 import (
 	"encoding/json"
@@ -149,7 +149,7 @@ func FindFFJewels(r io.ReadCloser, l *log.Logger) ([]StashSnapshot, error) {
 	return stashes, nil
 }
 
-func GetLatestChangeId() (string, error) {
+func GetLatestChangeId(client *http.Client) (string, error) {
 	type ChangeIdResponse struct {
 		Psapi string `json:"psapi"`
 	}
@@ -233,5 +233,5 @@ func ParsePrice(str string) (Price, error) {
 		return Price{}, err
 	}
 
-	return Price{priceValue, components[1]}, nil
+	return Price{priceValue, strings.TrimSpace(components[1])}, nil
 }
