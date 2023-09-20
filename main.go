@@ -17,22 +17,8 @@ const MAX_BACKOFFS = 6
 
 var client = &http.Client{Timeout: 30 * time.Second}
 
-func main() {
-
+func consumeRiver() {
 	l := log.New(os.Stdout, "", log.Ldate|log.Ltime)
-
-	env := os.Getenv("GO_ENV")
-	if env == "" {
-		env = "development"
-	}
-
-	godotenv.Load(".env." + env + ".local")
-	if env != "test" {
-		godotenv.Load(".env.local")
-	}
-
-	godotenv.Load(".env." + env)
-	godotenv.Load()
 
 	nextCursor := os.Getenv("INITIAL_CHANGE_ID")
 	if nextCursor == "" {
@@ -60,12 +46,26 @@ func main() {
 	}
 	defer db.Close()
 
-	// test the connection
-	var version string
-	if err := db.QueryRow("select version()").Scan(&version); err != nil {
-		log.Fatal(err)
-	}
-	l.Printf("DB connection established; version: %s\n", version)
+	// stmt, err := db.Prepare("SELECT * FROM jewels WHERE stashId = any($1::text[])")
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+
+	// rows, err := stmt.Query([]string{"test", "test", "test"})
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+
+	// for rows.Next() {
+	// 	var j DBJewel
+	// 	if err := rows.Scan(&j.Id, &j.JewelType, &j.JewelClass, &j.AllocatedNode, &j.StashX, &j.StashY, &j.ItemId, &j.StashId, &j.ListPriceChaos, &j.ListPriceDivines, &j.RecordedAt); err != nil {
+	// 		log.Fatal(err)
+	// 	}
+
+	// 	l.Printf("%+v\n", j)
+	// }
+
+	// return
 
 	nextWaitMs := 0
 	backoffs := 0
@@ -86,6 +86,7 @@ func main() {
 
 		l.Println("Sending request")
 		resp, err := client.Do(req)
+		reqHandleStart := time.Now()
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -156,13 +157,18 @@ func main() {
 			dbStart := time.Now()
 			ctx := context.TODO()
 			// TODO: make this a goroutine? or if it's really slow, add a message broker here
-			UpdateDb(ctx, db, tabs)
+			err := UpdateDb(ctx, db, tabs)
+			if err != nil {
+				log.Fatal(err)
+			}
 			dbEnd := time.Since(dbStart)
 			l.Printf("Response: database updated in %s\n", dbEnd)
 		}
 
+		reqHandleEnd := time.Since(reqHandleStart)
+
 		if nextWaitMs > 0 {
-			waitDuration := time.Duration(nextWaitMs)*time.Millisecond - decodeEnd
+			waitDuration := time.Duration(nextWaitMs)*time.Millisecond - reqHandleEnd
 			if waitDuration < 0 {
 				waitDuration = 0
 			}
@@ -181,4 +187,25 @@ func IntPow(n, m int) int {
 		result *= n
 	}
 	return result
+}
+
+func loadEnv() {
+	env := os.Getenv("GO_ENV")
+	if env == "" {
+		env = "development"
+	}
+
+	godotenv.Load(".env." + env + ".local")
+	if env != "test" {
+		godotenv.Load(".env.local")
+	}
+
+	godotenv.Load(".env." + env)
+	godotenv.Load()
+
+}
+
+func main() {
+	loadEnv()
+	consumeRiver()
 }

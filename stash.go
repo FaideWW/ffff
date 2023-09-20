@@ -52,18 +52,17 @@ func (i *RawItemPropValue) UnmarshalJSON(data []byte) error {
 
 type StashSnapshot struct {
 	Id         string
+	League     string
 	Items      []JewelEntry
 	RecordedAt time.Time
 }
 
 type JewelEntry struct {
-	Id     string
-	Type   string
-	Class  string
-	Node   string
-	StashX int
-	StashY int
-	Price  Price
+	Id    string
+	Type  string
+	Class string
+	Node  string
+	Price Price
 }
 
 func (j JewelEntry) String() string {
@@ -119,21 +118,18 @@ func FindFFJewels(r io.ReadCloser, l *log.Logger) ([]StashSnapshot, error) {
 					node := nodeRe.FindStringSubmatch(item.ExplicitMods[0])[1]
 					price, err := FindPrice(&item, &s)
 
-					l.Printf("%s (%s|%s) found at price %f %s\n", item.Name, class, node, price.Currency, price.Count)
-
 					// The item has no price listed
 					if err != nil {
 						continue
 					}
+					l.Printf("%s (%s|%s) found at price %f %s\n", item.Name, class, node, price.Count, price.Currency)
 
 					j := JewelEntry{
-						Id:     item.Id,
-						Type:   item.Name,
-						Class:  class,
-						Node:   node,
-						StashX: item.X,
-						StashY: item.Y,
-						Price:  price,
+						Id:    item.Id,
+						Type:  item.Name,
+						Class: class,
+						Node:  node,
+						Price: price,
 					}
 
 					jewels = append(jewels, j)
@@ -142,6 +138,7 @@ func FindFFJewels(r io.ReadCloser, l *log.Logger) ([]StashSnapshot, error) {
 
 			stash := StashSnapshot{
 				Id:         s.Id,
+				League:     s.League,
 				Items:      jewels,
 				RecordedAt: timestamp,
 			}
@@ -221,8 +218,8 @@ func FindPrice(item *RawItem, s *RawStashTab) (Price, error) {
 	if err != nil {
 		return price, err
 	}
-	// otherwise, we can't find a price
-	return Price{}, nil
+
+	return price, nil
 }
 
 func ParsePrice(str string) (Price, error) {
