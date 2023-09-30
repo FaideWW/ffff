@@ -105,6 +105,7 @@ func ConsumeRiver() {
 			}
 		}
 
+		currentCursor := nextCursor
 		nextCursor = resp.Header.Get("x-next-change-id")
 		if nextCursor != "" {
 			l.Printf("Next stash change id: %s\n", nextCursor)
@@ -116,7 +117,7 @@ func ConsumeRiver() {
 		}
 
 		decodeStart := time.Now()
-		tabs, decodeErr := FindFFJewels(resp.Body, l)
+		tabs, decodeErr := FindFFJewels(resp.Body, l, currentCursor)
 		if decodeErr != nil && decodeErr != io.EOF {
 			log.Fatal(decodeErr)
 		}

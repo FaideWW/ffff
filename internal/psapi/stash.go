@@ -54,6 +54,7 @@ type StashSnapshot struct {
 	Id         string
 	League     string
 	Items      []JewelEntry
+	ChangeId   string
 	RecordedAt time.Time
 }
 
@@ -74,7 +75,7 @@ type Price struct {
 	Currency string
 }
 
-func FindFFJewels(r io.ReadCloser, l *log.Logger) ([]StashSnapshot, error) {
+func FindFFJewels(r io.ReadCloser, l *log.Logger, changeId string) ([]StashSnapshot, error) {
 	nodeRe := regexp.MustCompile("^Allocates (.+) if you have the matching modifier")
 	timestamp := time.Now()
 	tabsChecked := 0
@@ -140,6 +141,7 @@ func FindFFJewels(r io.ReadCloser, l *log.Logger) ([]StashSnapshot, error) {
 				Id:         s.Id,
 				League:     s.League,
 				Items:      jewels,
+				ChangeId:   changeId,
 				RecordedAt: timestamp,
 			}
 
