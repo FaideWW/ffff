@@ -1,33 +1,31 @@
 package db
 
 import (
-	"context"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/libsql/libsql-client-go/libsql"
+	_ "modernc.org/sqlite"
 )
 
-type PQConfig struct {
-	User     string
-	Password string
-	Dbname   string
-	Host     string
-	Sslmode  string
+type SQLiteConfig struct {
+	DbUrl       string
+	DbAuthToken string
 }
 
 type DBJewel struct {
-	Id                int
-	JewelType         string
-	JewelClass        string
-	AllocatedNode     string
-	ItemId            string
-	StashId           string
-	League            string
-	ListPriceAmount   float64
-	ListPriceCurrency string
-	LastChangeId      string
-	RecordedAt        time.Time
+	Id                int       `db:"id"`
+	JewelType         string    `db:"jewelType"`
+	JewelClass        string    `db:"jewelClass"`
+	AllocatedNode     string    `db:"allocatedNode"`
+	ItemId            string    `db:"itemId"`
+	StashId           string    `db:"stashId"`
+	League            string    `db:"league"`
+	ListPriceAmount   float64   `db:"listPriceAmount"`
+	ListPriceCurrency string    `db:"listPriceCurrency"`
+	LastChangeId      string    `db:"lastChangeId"`
+	RecordedAt        time.Time `db:"recordedAt"`
 }
 
 type DBJewelConfig struct {
@@ -43,16 +41,13 @@ type DBJewelConfig struct {
 	RecordedAt        time.Time `db:"recordedAt"`
 }
 
-func MakeConnectionString(c *PQConfig) string {
-	return fmt.Sprintf("user=%s password=%s dbname=%s host=%s sslmode=%s", c.User, c.Password, c.Dbname, c.Host, c.Sslmode)
+func MakeConnectionString(c *SQLiteConfig) string {
+	return fmt.Sprintf("%s?authToken=%s", c.DbUrl, c.DbAuthToken)
 }
 
-func DBConnect(c *PQConfig) (*pgxpool.Pool, error) {
+func DBConnect(c *SQLiteConfig) (*sqlx.DB, error) {
 	connStr := MakeConnectionString(c)
-	dbpool, err := pgxpool.New(context.Background(), connStr)
-	if err != nil {
-		return nil, err
-	}
 
-	return dbpool, nil
+	db, err := sqlx.Connect("libsql", connStr)
+	return db, err
 }

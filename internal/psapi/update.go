@@ -2,19 +2,19 @@ package psapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"os"
 
-	db "github.com/faideww/ffff/internal/db"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/faideww/ffff/internal/db"
+	"github.com/jmoiron/sqlx"
 )
 
 const SELECT_JEWELS_QUERY = `
-SELECT (id,jewelType,jewelClass,allocatedNode,itemId,stashId,league,listPriceAmount,listPriceCurrency,lastChangeId,recordedAt) 
+SELECT * 
   FROM jewels 
-  WHERE stashId = any($1)
+  WHERE stashId IN (?)
   `
 
 const DELETE_JEWEL_QUERY = `
@@ -32,19 +32,19 @@ UPDATE jewels
 const UPSERT_JEWEL_QUERY = `
 INSERT INTO jewels(jewelType,jewelClass,allocatedNode,itemId,stashId,league,listPriceAmount,listPriceCurrency,lastChangeId,recordedAt) 
   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) 
-  ON CONFLICT ON CONSTRAINT jewels_itemid_key 
-  DO 
+  ON CONFLICT(itemId)
+  DO
     UPDATE SET stashId = $5, listPriceAmount = $7, listPriceCurrency = $8, lastChangeId = $9, recordedAt = $10
 `
 
-func UpdateDb(ctx context.Context, dbpool *pgxpool.Pool, stashes []StashSnapshot) error {
+func UpdateDb(ctx context.Context, dbHandle *sqlx.DB, stashes []StashSnapshot) error {
 	l := log.New(os.Stdout, "[DB]", log.Ldate|log.Ltime)
-	tx, err := dbpool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := dbHandle.BeginTxx(ctx, &sql.TxOptions{})
 	if err != nil {
 		l.Printf("failed to begin transaction\n")
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 
 	changesetStashesById := make(map[string]StashSnapshot)
 	changesetJewelsById := make(map[string]JewelEntry)
@@ -57,27 +57,35 @@ func UpdateDb(ctx context.Context, dbpool *pgxpool.Pool, stashes []StashSnapshot
 		}
 	}
 
-	rows, err := tx.Query(ctx, SELECT_JEWELS_QUERY, changesetStashIds)
+	query, args, err := sqlx.In(SELECT_JEWELS_QUERY, changesetStashIds)
+	if err != nil {
+		l.Printf("failed to expand slice arg in fetch entries query\n")
+		return err
+	}
+
+	rows, err := tx.QueryxContext(ctx, query, args...)
 	if err != nil {
 		l.Printf("failed to fetch entries\n")
 		return err
 	}
-
-	txBatch := &pgx.Batch{}
+	defer rows.Close()
 
 	checkedJewels := make(map[string]bool)
-	jewelsFromDb, err := pgx.CollectRows(rows, pgx.RowTo[db.DBJewel])
-	if err != nil {
-		l.Printf("failed to collect rows\n")
-		return err
-	}
-	for _, dbJewel := range jewelsFromDb {
+	for rows.Next() {
+
+		dbJewel := db.DBJewel{}
+		err = rows.StructScan(&dbJewel)
+		if err != nil {
+			l.Printf("failed to scan row into struct\n")
+			return err
+		}
+
 		csJewel, jewelOk := changesetJewelsById[dbJewel.ItemId]
 		csTab, tabOk := changesetStashesById[dbJewel.StashId]
 		if tabOk && !jewelOk {
 			// if the tab is found but not the jewel, we can assume it has been delisted and it's safe to delete the row
 			l.Printf("Item %s has been delisted, deleting entry\n", dbJewel.ItemId)
-			txBatch.Queue(DELETE_JEWEL_QUERY, dbJewel.Id)
+			tx.ExecContext(ctx, DELETE_JEWEL_QUERY, dbJewel.Id)
 		}
 
 		// this should never happen, but just in case...
@@ -88,7 +96,7 @@ func UpdateDb(ctx context.Context, dbpool *pgxpool.Pool, stashes []StashSnapshot
 		// check if anything needs to be updated
 		if csJewel.Price.Count != dbJewel.ListPriceAmount || csJewel.Price.Currency != dbJewel.ListPriceCurrency || csTab.Id != dbJewel.StashId {
 			l.Printf("Price has changed for item %s (%f %s -> %f %s)\n", csJewel, csJewel.Price.Count, csJewel.Price.Currency, dbJewel.ListPriceAmount, dbJewel.ListPriceCurrency)
-			txBatch.Queue(UPDATE_JEWEL_PRICE_QUERY, csTab.Id, csJewel.Price.Count, csJewel.Price.Currency, csTab.ChangeId, csTab.RecordedAt, dbJewel.Id)
+			tx.ExecContext(ctx, UPDATE_JEWEL_PRICE_QUERY, csTab.Id, csJewel.Price.Count, csJewel.Price.Currency, csTab.ChangeId, csTab.RecordedAt, dbJewel.Id)
 		}
 
 		checkedJewels[dbJewel.ItemId] = true
@@ -106,24 +114,17 @@ func UpdateDb(ctx context.Context, dbpool *pgxpool.Pool, stashes []StashSnapshot
 				JewelType: item.Type, JewelClass: item.Class, AllocatedNode: item.Node, ItemId: item.Id, StashId: tab.Id, League: tab.League, ListPriceAmount: item.Price.Count, ListPriceCurrency: item.Price.Currency, LastChangeId: tab.ChangeId, RecordedAt: tab.RecordedAt,
 			}
 
-			txBatch.Queue(UPSERT_JEWEL_QUERY, j.JewelType, j.JewelClass, j.AllocatedNode, j.ItemId, j.StashId, j.League, j.ListPriceAmount, j.ListPriceCurrency, j.LastChangeId, j.RecordedAt)
-			// nInsert, err := res.RowsAffected()
-
 			l.Printf("Adding new item %s, at price %f %s\n", item, item.Price.Count, item.Price.Currency)
+			_, err = tx.ExecContext(ctx, UPSERT_JEWEL_QUERY, j.JewelType, j.JewelClass, j.AllocatedNode, j.ItemId, j.StashId, j.League, j.ListPriceAmount, j.ListPriceCurrency, j.LastChangeId, j.RecordedAt)
+			if err != nil {
+				l.Printf("failed to insert\n")
+				return err
+			}
+			// nInsert, err := res.RowsAffected()
 		}
 	}
 
-	if txBatch.Len() > 0 {
-		res := tx.SendBatch(ctx, txBatch)
-		// TODO: error handling?
-		if err := res.Close(); err != nil {
-			l.Printf("failed to close batch\n")
-			return err
-		}
-
-	}
-
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(); err != nil {
 		l.Printf("failed to commit transaction\n")
 		return err
 	}

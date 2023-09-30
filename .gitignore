@@ -23,3 +23,6 @@ go.work
 # Environments
 .env*.local
 
+# Sqlite databases
+*.db 
+

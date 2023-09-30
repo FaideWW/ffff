@@ -1,5 +1,5 @@
 CREATE TABLE if not exists jewels(
-  id BIGSERIAL PRIMARY KEY NOT NULL,
+  id INTEGER PRIMARY KEY NOT NULL,
   jewelType TEXT NOT NULL,
   jewelClass TEXT NOT NULL,
   allocatedNode TEXT NOT NULL,
@@ -8,6 +8,7 @@ CREATE TABLE if not exists jewels(
   itemId TEXT UNIQUE NOT NULL,
   listPriceAmount REAL NOT NULL,
   listPriceCurrency TEXT NOT NULL,
+  lastChangeId TEXT NOT NULL,
   recordedAt TIMESTAMP NOT NULL
 );
 

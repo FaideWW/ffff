@@ -31,15 +31,12 @@ func ConsumeRiver() {
 	l.Printf("Starting change id: %s\n", nextCursor)
 
 	// Init connection to the database
-	pqCfg := db.PQConfig{
-		User:     os.Getenv("DB_USER"),
-		Password: os.Getenv("DB_PASS"),
-		Dbname:   os.Getenv("DB_NAME"),
-		Host:     os.Getenv("DB_HOST"),
-		Sslmode:  "verify-full",
+	dbCfg := db.SQLiteConfig{
+		DbUrl:       os.Getenv("DB_URL"),
+		DbAuthToken: os.Getenv("DB_AUTHTOKEN"),
 	}
 
-	db, err := db.DBConnect(&pqCfg)
+	db, err := db.DBConnect(&dbCfg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -68,7 +65,6 @@ func ConsumeRiver() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer resp.Body.Close()
 
 		rateLimitExceeded := false
 		// Handle rate limit
@@ -154,6 +150,7 @@ func ConsumeRiver() {
 			l.Printf("waiting %s...\n", waitDuration)
 			time.Sleep(waitDuration)
 		}
+		resp.Body.Close()
 	}
 }
 
