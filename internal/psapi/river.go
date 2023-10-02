@@ -63,6 +63,10 @@ func ConsumeRiver() {
 		resp, err := client.Do(req)
 		reqHandleStart := time.Now()
 		if err != nil {
+			l.Printf("Server returned %s\n", resp.Status)
+			for k, v := range resp.Header {
+				l.Printf("  %s=%s\n", k, v)
+			}
 			log.Fatal(err)
 		}
 

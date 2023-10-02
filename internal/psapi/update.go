@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"time"
 
 	"github.com/faideww/ffff/internal/db"
 	"github.com/jmoiron/sqlx"
@@ -124,7 +125,16 @@ func UpdateDb(ctx context.Context, dbHandle *sqlx.DB, stashes []StashSnapshot) e
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	retries := 5
+	backoffMs := time.Duration(50)
+	err = tx.Commit()
+	for err != nil && retries > 0 {
+		l.Printf("transaction failed; retrying after %s (%d tries left)\n", backoffMs, retries)
+		time.Sleep(backoffMs * time.Millisecond)
+		err = tx.Commit()
+		retries--
+	}
+	if err != nil {
 		l.Printf("failed to commit transaction\n")
 		return err
 	}
