@@ -41,6 +41,15 @@ type DBJewelConfig struct {
 	RecordedAt        time.Time `db:"recordedAt"`
 }
 
+type DBChangeset struct {
+	Id           int           `db:"id"`
+	ChangeId     string        `db:"changeId"`
+	NextChangeId string        `db:"nextChangeId"`
+	StashCount   int           `db:"stashCount"`
+	ProcessedAt  time.Time     `db:"processedAt"`
+	TimeTaken    time.Duration `db:"timeTaken"`
+}
+
 func MakeConnectionString(c *SQLiteConfig) string {
 	return fmt.Sprintf("%s?authToken=%s", c.DbUrl, c.DbAuthToken)
 }

@@ -31,7 +31,7 @@ CREATE TABLE if not exists changesets(
   nextChangeId TEXT UNIQUE NOT NULL,
   stashCount INTEGER NOT NULL,
   processedAt TIMESTAMP NOT NULL,
-  timeTakenSeconds REAL NOT NULL
+  timeTaken TEXT NOT NULL
 );
 
 CREATE INDEX if not exists changesets_by_changeid ON changesets (changeId);

@@ -36,11 +36,11 @@ func ConsumeRiver() {
 		DbAuthToken: os.Getenv("DB_AUTHTOKEN"),
 	}
 
-	db, err := db.DBConnect(&dbCfg)
+	dbHandle, err := db.DBConnect(&dbCfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+	defer dbHandle.Close()
 
 	nextWaitMs := 0
 	backoffs := 0
@@ -124,6 +124,7 @@ func ConsumeRiver() {
 		decodeEnd := time.Since(decodeStart)
 
 		l.Printf("Response: processed %d stash tabs in %s\n", len(tabs), decodeEnd)
+		ctx := context.TODO()
 
 		// Slowly back off if we're at the front of the river
 		if len(tabs) == 0 && !rateLimitExceeded {
@@ -134,9 +135,8 @@ func ConsumeRiver() {
 		} else if len(tabs) > 0 {
 			backoffs = 0
 			dbStart := time.Now()
-			ctx := context.TODO()
 			// TODO: make this a goroutine? or if it's really slow, add a message broker here
-			err := UpdateDb(ctx, db, tabs)
+			err := UpdateDb(ctx, dbHandle, tabs)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -145,6 +145,24 @@ func ConsumeRiver() {
 		}
 
 		reqHandleEnd := time.Since(reqHandleStart)
+
+		c := db.DBChangeset{
+			ChangeId:     currentCursor,
+			NextChangeId: nextCursor,
+			StashCount:   len(tabs),
+			// TODO: make sure all timestamps are consistent
+			ProcessedAt: time.Now(),
+			TimeTaken:   reqHandleEnd,
+		}
+
+		l.Printf("%+v\n", c)
+
+		_, err = dbHandle.NamedExecContext(ctx, "INSERT INTO changesets", c)
+
+		if err != nil {
+			l.Printf("failed to record changeset\n")
+			log.Fatal(err)
+		}
 
 		if nextWaitMs > 0 {
 			waitDuration := time.Duration(nextWaitMs)*time.Millisecond - reqHandleEnd
