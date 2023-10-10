@@ -95,7 +95,7 @@ func UpdateDb(ctx context.Context, dbHandle *sqlx.DB, stashes []StashSnapshot) e
 		}
 
 		// check if anything needs to be updated
-		if csJewel.Price.Count != dbJewel.ListPriceAmount || csJewel.Price.Currency != dbJewel.ListPriceCurrency || csTab.Id != dbJewel.StashId {
+		if tabOk && jewelOk && csJewel.Price.Count != dbJewel.ListPriceAmount || csJewel.Price.Currency != dbJewel.ListPriceCurrency || csTab.Id != dbJewel.StashId {
 			l.Printf("Price has changed for item %s (%f %s -> %f %s)\n", csJewel, csJewel.Price.Count, csJewel.Price.Currency, dbJewel.ListPriceAmount, dbJewel.ListPriceCurrency)
 			tx.ExecContext(ctx, UPDATE_JEWEL_PRICE_QUERY, csTab.Id, csJewel.Price.Count, csJewel.Price.Currency, csTab.ChangeId, csTab.RecordedAt, dbJewel.Id)
 		}
@@ -129,7 +129,7 @@ func UpdateDb(ctx context.Context, dbHandle *sqlx.DB, stashes []StashSnapshot) e
 	backoffMs := time.Duration(50)
 	err = tx.Commit()
 	for err != nil && retries > 0 {
-		l.Printf("transaction failed; retrying after %s (%d tries left)\n", backoffMs, retries)
+		l.Printf("--- transaction failed; retrying after %s (%d tries left)\n", backoffMs, retries)
 		time.Sleep(backoffMs * time.Millisecond)
 		err = tx.Commit()
 		retries--

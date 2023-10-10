@@ -19,22 +19,6 @@ import (
 // when we run the stat calculations
 const CHAOS_PER_DIVINE = 230
 
-type JewelSnapshot struct {
-	League             string    `db:"league"`
-	JewelType          string    `db:"jewelType"`
-	JewelClass         string    `db:"jewelClass"`
-	AllocatedNode      string    `db:"allocatedNode"`
-	MinPrice           float64   `db:"minPrice"`
-	FirstQuartilePrice float64   `db:"firstQuartilePrice"`
-	MedianPrice        float64   `db:"medianPrice"`
-	ThirdQuartilePrice float64   `db:"thirdQuartilePrice"`
-	MaxPrice           float64   `db:"maxPrice"`
-	Stddev             float64   `db:"stddev"`
-	NumListed          int       `db:"numListed"`
-	ExchangeRate       int       `db:"exchangeRate"`
-	GeneratedAt        time.Time `db:"generatedAt"`
-}
-
 type Boxplot = [5]float64
 
 func hashJewelKey(j *db.DBJewel) string {
@@ -128,7 +112,7 @@ func AggregateStats(from *time.Time, to *time.Time) error {
 	start := time.Now()
 	for rows.Next() {
 		j := db.DBJewel{}
-		err := rows.StructScan(&j)
+		err = rows.StructScan(&j)
 		if err != nil {
 			l.Printf("failed to scan struct\n")
 			return err
@@ -150,13 +134,17 @@ func AggregateStats(from *time.Time, to *time.Time) error {
 	l.Printf("Parsing %d jewels took %s\n", jCount, parseTime)
 
 	tx, err := dbHandle.BeginTxx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
 	// snapshots := make([]JewelSnapshot, len(jewelPrices))
 
 	for k, p := range jewelPrices {
 		jData := unhashJewelKey(k)
 		boxplot, stddev := calculatePriceSpread(p)
-		s := JewelSnapshot{
+		s := db.DBJewelSnapshot{
 			League:             jData.League,
 			JewelType:          jData.JewelType,
 			JewelClass:         jData.JewelClass,
@@ -172,10 +160,14 @@ func AggregateStats(from *time.Time, to *time.Time) error {
 			GeneratedAt:        time.Now(),
 		}
 
-		tx.NamedExecContext(ctx, "INSERT INTO snapshots", s)
+		_, err = tx.NamedExecContext(ctx, "INSERT INTO snapshots(league,jewelType,jewelClass,allocatedNode,minPrice,firstQuartilePrice,medianPrice,thirdQuartilePrice,maxPrice,stddev,numListed,exchangeRate,generatedAt) VALUES (:league,:jewelType,:jewelClass,:allocatedNode,:minPrice,:firstQuartilePrice,:medianPrice,:thirdQuartilePrice,:maxPrice,:stddev,:numListed,:exchangeRate,:generatedAt)", s)
+		if err != nil {
+			fmt.Printf("failed to insert snapshot\n")
+			return err
+		}
 		// snapshots = append(snapshots, s)
 
-		l.Printf("%s: %v (%f)\n", k, boxplot, stddev)
+		// l.Printf("%s: %v (%f)\n", k, boxplot, stddev)
 	}
 
 	err = tx.Commit()

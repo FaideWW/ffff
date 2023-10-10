@@ -50,6 +50,23 @@ type DBChangeset struct {
 	TimeTaken    time.Duration `db:"timeTaken"`
 }
 
+type DBJewelSnapshot struct {
+	Id                 int       `db:"id"`
+	League             string    `db:"league"`
+	JewelType          string    `db:"jewelType"`
+	JewelClass         string    `db:"jewelClass"`
+	AllocatedNode      string    `db:"allocatedNode"`
+	MinPrice           float64   `db:"minPrice"`
+	FirstQuartilePrice float64   `db:"firstQuartilePrice"`
+	MedianPrice        float64   `db:"medianPrice"`
+	ThirdQuartilePrice float64   `db:"thirdQuartilePrice"`
+	MaxPrice           float64   `db:"maxPrice"`
+	Stddev             float64   `db:"stddev"`
+	NumListed          int       `db:"numListed"`
+	ExchangeRate       int       `db:"exchangeRate"`
+	GeneratedAt        time.Time `db:"generatedAt"`
+}
+
 func MakeConnectionString(c *SQLiteConfig) string {
 	return fmt.Sprintf("%s?authToken=%s", c.DbUrl, c.DbAuthToken)
 }

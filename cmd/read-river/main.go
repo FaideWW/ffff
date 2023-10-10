@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 
 	psapi "github.com/faideww/ffff/internal/psapi"
@@ -23,7 +24,13 @@ func loadEnv() {
 
 }
 
+func parseFlags(f *psapi.CliFlags) {
+	flag.BoolVar(&f.StartFromHead, "startFromHead", false, "whether to query the trade api for the river head and begin from there, or resume from the latest changeset in the `changesets` table")
+}
+
 func main() {
 	loadEnv()
-	psapi.ConsumeRiver()
+	f := psapi.CliFlags{}
+	parseFlags(&f)
+	psapi.ConsumeRiver(&f)
 }

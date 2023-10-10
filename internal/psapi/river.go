@@ -13,22 +13,14 @@ import (
 	db "github.com/faideww/ffff/internal/db"
 )
 
+type CliFlags struct {
+	StartFromHead bool
+}
+
 const MAX_BACKOFFS = 6
 
-func ConsumeRiver() {
+func ConsumeRiver(f *CliFlags) {
 	l := log.New(os.Stdout, "", log.Ldate|log.Ltime)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	nextCursor := os.Getenv("INITIAL_CHANGE_ID")
-	if nextCursor == "" {
-		l.Printf("No change id found in environment; fetching latest id from API\n")
-		var err error
-		nextCursor, err = GetLatestChangeId(client)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-	l.Printf("Starting change id: %s\n", nextCursor)
 
 	// Init connection to the database
 	dbCfg := db.SQLiteConfig{
@@ -41,6 +33,28 @@ func ConsumeRiver() {
 		log.Fatal(err)
 	}
 	defer dbHandle.Close()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	nextCursor := os.Getenv("INITIAL_CHANGE_ID")
+	if nextCursor == "" {
+		l.Printf("No change id found in environment\n")
+		if f.StartFromHead {
+			l.Printf("fetching latest id from API\n")
+			var err error
+			nextCursor, err = GetLatestChangeId(client)
+			if err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			l.Printf("resuming from last changeset id\n")
+			row := dbHandle.QueryRowx("SELECT nextChangeId FROM changesets ORDER BY processedAt DESC LIMIT 1")
+			err := row.Scan(&nextCursor)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
+	l.Printf("Starting change id: %s\n", nextCursor)
 
 	nextWaitMs := 0
 	backoffs := 0
@@ -146,22 +160,30 @@ func ConsumeRiver() {
 
 		reqHandleEnd := time.Since(reqHandleStart)
 
-		c := db.DBChangeset{
-			ChangeId:     currentCursor,
-			NextChangeId: nextCursor,
-			StashCount:   len(tabs),
-			// TODO: make sure all timestamps are consistent
-			ProcessedAt: time.Now(),
-			TimeTaken:   reqHandleEnd,
-		}
+		if len(tabs) > 0 {
+			c := db.DBChangeset{
+				ChangeId:     currentCursor,
+				NextChangeId: nextCursor,
+				StashCount:   len(tabs),
+				// TODO: make sure all timestamps are consistent
+				ProcessedAt: decodeStart,
+				TimeTaken:   reqHandleEnd,
+			}
 
-		l.Printf("%+v\n", c)
-
-		_, err = dbHandle.NamedExecContext(ctx, "INSERT INTO changesets", c)
-
-		if err != nil {
-			l.Printf("failed to record changeset\n")
-			log.Fatal(err)
+			retries := 5
+			backoffMs := time.Duration(50)
+			_, err = dbHandle.ExecContext(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken) VALUES ($1,$2,$3,$4,$5)", c.ChangeId, c.NextChangeId, c.StashCount, c.ProcessedAt, c.TimeTaken)
+			for err != nil && retries > 0 {
+				l.Printf("--- transaction failed; retrying after %s (%d tries left)\n", backoffMs, retries)
+				time.Sleep(backoffMs * time.Millisecond)
+				_, err = dbHandle.ExecContext(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken) VALUES ($1,$2,$3,$4,$5)", c.ChangeId, c.NextChangeId, c.StashCount, c.ProcessedAt, c.TimeTaken)
+				retries--
+			}
+			if err != nil {
+				l.Printf("out of retries - exiting")
+				log.Fatal(err)
+			}
+			// _, err = dbHandle.NamedExecContext(ctx, "INSERT INTO changesets", c)
 		}
 
 		if nextWaitMs > 0 {
