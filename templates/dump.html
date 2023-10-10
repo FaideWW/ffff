@@ -1,0 +1,40 @@
+{{define "title"}}ffff - Forbidden Flame/Flesh Finder{{end}} {{define "body"}}
+<table>
+  <thead>
+    <tr>
+      <th>League</th>
+      <th>Jewel type</th>
+      <th>Class</th>
+      <th>Node</th>
+      <th>Num listed</th>
+      <th>Min price</th>
+      <th>Q1</th>
+      <th>Median price</th>
+      <th>Q3</th>
+      <th>Max price</th>
+      <th>Standard deviation</th>
+      <th>Exchange rate (chaos per div)</th>
+      <th>Time generated</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{ range .Jewels }}
+    <tr>
+      <td>{{ .League }}</td>
+      <td>{{ .JewelType }}</td>
+      <td>{{ .JewelClass }}</td>
+      <td>{{ .AllocatedNode }}</td>
+      <td>{{ .NumListed }}</td>
+      <td>{{ .MinPrice }}</td>
+      <td>{{ .FirstQuartilePrice }}</td>
+      <td>{{ .MedianPrice }}</td>
+      <td>{{ .ThirdQuartilePrice }}</td>
+      <td>{{ .MaxPrice }}</td>
+      <td>{{ .Stddev }}</td>
+      <td>{{ .ExchangeRate }}</td>
+      <td>{{ .GeneratedAt.Format "Jan 02, 2006 3:04 PM" }}</td>
+    </tr>
+    {{ end}}
+  </tbody>
+</table>
+{{end}}
