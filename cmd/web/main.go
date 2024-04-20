@@ -30,5 +30,11 @@ func main() {
 	loadEnv()
 	f := CliFlags{}
 	parseFlags(&f)
-	StartWebServer()
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	StartWebServer(port)
 }

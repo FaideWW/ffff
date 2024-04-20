@@ -151,7 +151,10 @@ func FindFFJewels(r io.ReadCloser, l *log.Logger, changeId string) ([]StashSnaps
 	return stashes, nil
 }
 
-func GetLatestChangeId(client *http.Client) (string, error) {
+// Fetches the official latest change id from pathofexile.com. This doesn't
+// work (in my experience) from a cloud-based IP, so the "unofficial" latest
+// change id from poe.ninja is preferred
+func GetLatestChangeIdGGG(client *http.Client) (string, error) {
 	type ChangeIdResponse struct {
 		Psapi string `json:"psapi"`
 	}

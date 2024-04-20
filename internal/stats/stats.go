@@ -2,22 +2,25 @@ package stats
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
+	"runtime/pprof"
 	"strings"
 	"time"
 
 	db "github.com/faideww/ffff/internal/db"
-	"github.com/jmoiron/sqlx"
+	"github.com/faideww/ffff/internal/poeninja"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/exp/slices"
 )
 
 // TODO: track this on the river and fetch the live value from the database
 // when we run the stat calculations
-const CHAOS_PER_DIVINE = 230
+const CHAOS_PER_DIVINE = 150
 
 type Boxplot = [5]float64
 
@@ -35,116 +38,202 @@ func unhashJewelKey(key string) db.DBJewel {
 	}
 }
 
-func getPriceInChaos(j *db.DBJewel, exchangeRate int) (int, bool) {
+func GetPriceInChaos(j *db.DBJewel, rates map[string]float64) (int, bool) {
 	if j.ListPriceCurrency == "chaos" {
 		return int(j.ListPriceAmount), true
-	} else if j.ListPriceCurrency == "divine" {
-		return int(j.ListPriceAmount * float64(exchangeRate)), true
 	}
 
-	// unsupported currency, ignore
-	return 0, false
+	chaosEquiv, ok := rates[j.ListPriceCurrency]
+	if !ok {
+		fmt.Printf("unsupported currency %s (%f) for %s - %s\n", j.ListPriceCurrency, j.ListPriceAmount, j.JewelType, j.AllocatedNode)
+		// unsupported currency, ignore
+		return 0, false
+	}
+	return int(j.ListPriceAmount * float64(chaosEquiv)), true
 }
 
-func insertSorted(arr []int, v int) []int {
+func InsertSorted(arr []int, v int) []int {
 	pos, _ := slices.BinarySearch(arr, v)
 	arr = slices.Insert(arr, pos, v)
 	return arr
 }
 
-func calculatePriceSpread(prices []int) ([5]float64, float64) {
-	n := len(prices)
-	pMin := float64(prices[0])
-	pMax := float64(prices[n-1])
-	pMed := float64(prices[n/2])
-	if n%2 == 0 {
-		pMed = float64(prices[(n/2)-1]+prices[n/2]) / 2
-	}
-	pQ1 := float64(prices[n/4])
-	pQ3 := float64(prices[(3*n)/4])
-
-	// calculate standard deviation
-	sumDeviation := 0.0
-	for _, v := range prices {
-		sumDeviation += math.Pow(float64(v)-float64(pMed), 2)
-	}
-	stddev := math.Sqrt(sumDeviation / float64(n))
-
-	return [5]float64{pMin, pQ1, pMed, pQ3, pMax}, stddev
-
+func InsertSortedFunc[S ~[]E, E any](arr S, v E, cmp func(E, E) int) S {
+	pos, _ := slices.BinarySearchFunc(arr, v, cmp)
+	arr = slices.Insert(arr, pos, v)
+	return arr
 }
 
-func AggregateStats(from *time.Time, to *time.Time) error {
-	l := log.New(os.Stdout, "[STATS]", log.Ldate|log.Ltime)
-	ctx := context.Background()
-	dbCfg := db.SQLiteConfig{
-		DbUrl:       os.Getenv("DB_URL"),
-		DbAuthToken: os.Getenv("DB_AUTHTOKEN"),
+func calculateStandardDeviation(values []float64) float64 {
+	n := len(values)
+	median := values[n/2]
+	if n%2 == 0 {
+		median = values[(n/2)-1] + values[n/2]/2
+	}
+	// calculate standard deviation
+	sumDeviation := 0.0
+	for _, v := range values {
+		sumDeviation += math.Pow(v-median, 2)
+	}
+	return math.Sqrt(sumDeviation / float64(n))
+}
+
+func calculatePriceSpread(prices []int) ([5]float64, float64) {
+	n := len(prices)
+	floatPrices := make([]float64, n)
+	for i, p := range prices {
+		floatPrices[i] = float64(p)
+	}
+	pMin := floatPrices[0]
+	pMax := floatPrices[n-1]
+	pMed := floatPrices[n/2]
+	pQ1 := floatPrices[n/4]
+	pQ3 := floatPrices[(3*n)/4]
+	stddev := calculateStandardDeviation(floatPrices)
+
+	return [5]float64{pMin, pQ1, pMed, pQ3, pMax}, stddev
+}
+
+func calculateWindowPrice(prices []int, boxplot [5]float64, stddev float64) float64 {
+	meanMinusOne := boxplot[2] - stddev
+	meanPlusOne := boxplot[2] + stddev
+
+	filteredPrices := []int{}
+
+	for _, p := range prices {
+		if float64(p) >= meanMinusOne && float64(p) <= meanPlusOne {
+			filteredPrices = append(filteredPrices, p)
+		}
+	}
+	// recalculate stddev and filter again
+	nextBox, nextStddev := calculatePriceSpread(filteredPrices)
+	meanMinusOne = nextBox[2] - nextStddev
+	meanPlusOne = nextBox[2] + nextStddev
+
+	doubleFilteredPrices := []int{}
+
+	for _, p := range filteredPrices {
+		if float64(p) >= meanMinusOne && float64(p) <= meanPlusOne {
+			doubleFilteredPrices = append(doubleFilteredPrices, p)
+		}
 	}
 
-	dbHandle, err := db.DBConnect(&dbCfg)
+	return float64(doubleFilteredPrices[0])
+}
+
+func AggregateStats() error {
+	// performance profiling code
+	f, err := os.Create("collect-stats.prof")
+	if err != nil {
+		log.Fatal("failed to create prof file", err)
+	}
+	defer f.Close()
+	if err := pprof.StartCPUProfile(f); err != nil {
+		log.Fatal("failed to start profile", err)
+	}
+	defer pprof.StopCPUProfile()
+
+	l := log.New(os.Stdout, "[STATS]", log.Ldate|log.Ltime)
+	ctx := context.Background()
+	dbHandle, err := db.DBConnect(os.Getenv("PG_DB_CONNSTR"))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer dbHandle.Close()
 
+	client := &http.Client{Timeout: 30 * time.Second}
 	// TODO: is there a nicer way to find leagues than a hardcoded env var?
 	leagues := strings.Split(os.Getenv("LEAGUES"), ",")
 
-	query, args, err := sqlx.In("SELECT * FROM jewels WHERE league IN (?)", leagues)
-	if err != nil {
-		l.Printf("failed to expand slice in fetch entries query\n")
-		return err
+	exchangeRates := make(map[string]map[string]float64, len(leagues))
+	for _, league := range leagues {
+		rates, err := poeninja.GetExchangeRates(client, league)
+		if err != nil {
+			l.Printf("Failed to retrieve exchange rates for league %s\n", league)
+			return err
+		}
+		exchangeRates[league] = rates
 	}
 
-	exchangeRate := CHAOS_PER_DIVINE
+	jewelFetchStart := time.Now()
+	rows, _ := dbHandle.Query(ctx, "SELECT * FROM jewels WHERE league = any($1)", leagues)
+	defer rows.Close()
+	jewelFetchElapsed := time.Since(jewelFetchStart)
+	l.Printf("db fetch took %.3fs\n", jewelFetchElapsed.Seconds())
 
-	jewelPrices := make(map[string][]int)
+	start := time.Now()
 
-	rows, err := dbHandle.QueryxContext(ctx, query, args...)
+	jewels, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.DBJewel])
 	if err != nil {
 		l.Printf("failed to collect rows\n")
 		return err
 	}
-	defer rows.Close()
 
-	jCount := 0
-	start := time.Now()
-	for rows.Next() {
-		j := db.DBJewel{}
-		err = rows.StructScan(&j)
-		if err != nil {
-			l.Printf("failed to scan struct\n")
-			return err
-		}
-		jCount++
+	l.Printf("row marshalling took %.3fs\n", time.Since(start).Seconds())
+	jewelPrices := make(map[string][]int)
+	seenCurrencies := make(map[string]map[string]bool)
+	for _, j := range jewels {
 
 		jKey := hashJewelKey(&j)
-		_, ok := jewelPrices[jKey]
-		if !ok {
-			jewelPrices[jKey] = []int{}
+		_, keyOk := jewelPrices[jKey]
+		price, priceOk := GetPriceInChaos(&j, exchangeRates[j.League])
+		if _, leagueOk := seenCurrencies[j.League]; !leagueOk {
+			seenCurrencies[j.League] = make(map[string]bool)
 		}
-		price, ok := getPriceInChaos(&j, exchangeRate)
-		if ok {
-			jewelPrices[jKey] = insertSorted(jewelPrices[jKey], price)
+		if priceOk {
+			if !keyOk {
+				jewelPrices[jKey] = []int{}
+			}
+			jewelPrices[jKey] = InsertSorted(jewelPrices[jKey], price)
+			seenCurrencies[j.League][j.ListPriceCurrency] = true
 		}
 	}
 	parseTime := time.Since(start)
 
-	l.Printf("Parsing %d jewels took %s\n", jCount, parseTime)
+	l.Printf("Parsing %d jewels took %s\n", len(jewels), parseTime)
 
-	tx, err := dbHandle.BeginTxx(ctx, &sql.TxOptions{})
+	tx, err := dbHandle.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback(ctx)
+
+	fmt.Printf("seenCurrencies:%+v\n", seenCurrencies)
+	seenExchangeRates := make(map[string]map[string]float64)
+	for league, rates := range seenCurrencies {
+		for currency, cOk := range rates {
+			if cOk {
+				_, rOk := seenExchangeRates[league]
+				if !rOk {
+					seenExchangeRates[league] = make(map[string]float64)
+				}
+				seenExchangeRates[league][currency] = exchangeRates[league][currency]
+			}
+		}
+	}
+
+	var setId int
+	exchangeRatesJson, err := json.Marshal(seenExchangeRates)
+	if err != nil {
+		l.Printf("failed to marshal exchange rates\n")
+		return err
+	}
+	err = tx.QueryRow(ctx, "INSERT into snapshot_sets(exchangeRates, generatedAt) VALUES ($1,$2) RETURNING id", exchangeRatesJson, start).Scan(&setId)
+	if err != nil {
+		l.Printf("failed to create new snapshot set\n")
+		return err
+	}
 
 	// snapshots := make([]JewelSnapshot, len(jewelPrices))
 
+	batch := &pgx.Batch{}
 	for k, p := range jewelPrices {
 		jData := unhashJewelKey(k)
 		boxplot, stddev := calculatePriceSpread(p)
+		windowPrice := calculateWindowPrice(p, boxplot, stddev)
+		l.Printf("window price for [%s]%s - %s: %.2f\n", jData.League, jData.JewelType, jData.AllocatedNode, windowPrice)
 		s := db.DBJewelSnapshot{
+			SetId:              setId,
 			League:             jData.League,
 			JewelType:          jData.JewelType,
 			JewelClass:         jData.JewelClass,
@@ -154,23 +243,27 @@ func AggregateStats(from *time.Time, to *time.Time) error {
 			MedianPrice:        boxplot[2],
 			ThirdQuartilePrice: boxplot[3],
 			MaxPrice:           boxplot[4],
+			WindowPrice:        windowPrice,
 			Stddev:             stddev,
 			NumListed:          len(p),
-			ExchangeRate:       exchangeRate,
-			GeneratedAt:        time.Now(),
+			GeneratedAt:        start,
 		}
 
-		_, err = tx.NamedExecContext(ctx, "INSERT INTO snapshots(league,jewelType,jewelClass,allocatedNode,minPrice,firstQuartilePrice,medianPrice,thirdQuartilePrice,maxPrice,stddev,numListed,exchangeRate,generatedAt) VALUES (:league,:jewelType,:jewelClass,:allocatedNode,:minPrice,:firstQuartilePrice,:medianPrice,:thirdQuartilePrice,:maxPrice,:stddev,:numListed,:exchangeRate,:generatedAt)", s)
+		batch.Queue("INSERT INTO snapshots(setId,league,jewelType,jewelClass,allocatedNode,minPrice,firstQuartilePrice,medianPrice,thirdQuartilePrice,maxPrice,windowPrice,stddev,numListed,generatedAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)", s.SetId, s.League, s.JewelType, s.JewelClass, s.AllocatedNode, s.MinPrice, s.FirstQuartilePrice, s.MedianPrice, s.ThirdQuartilePrice, s.MaxPrice, s.WindowPrice, s.Stddev, s.NumListed, s.GeneratedAt)
+		// l.Printf("%s: %v (%f)\n", k, boxplot, stddev)
+	}
+
+	results := tx.SendBatch(ctx, batch)
+	for range jewelPrices {
+		_, err := results.Exec()
 		if err != nil {
 			fmt.Printf("failed to insert snapshot\n")
 			return err
 		}
-		// snapshots = append(snapshots, s)
-
-		// l.Printf("%s: %v (%f)\n", k, boxplot, stddev)
 	}
+	results.Close()
 
-	err = tx.Commit()
+	err = tx.Commit(ctx)
 	if err != nil {
 		l.Printf("failed to commit tx\n")
 		return err

@@ -26,7 +26,7 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
-	err := stats.AggregateStats(nil, nil)
+	err := stats.AggregateStats()
 
 	if err != nil {
 		log.Fatal(err)

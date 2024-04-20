@@ -26,6 +26,8 @@ func loadEnv() {
 
 func parseFlags(f *psapi.CliFlags) {
 	flag.BoolVar(&f.StartFromHead, "startFromHead", false, "whether to query the trade api for the river head and begin from there, or resume from the latest changeset in the `changesets` table")
+
+	flag.Parse()
 }
 
 func main() {

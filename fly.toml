@@ -1,0 +1,33 @@
+# fly.toml app configuration file generated for ffff-thrumming-log-5941 on 2023-12-08T10:21:28-07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = "ffff-thrumming-log-5941"
+primary_region = "sea"
+
+[build]
+  builder = "paketobuildpacks/builder:base"
+  buildpacks = ["gcr.io/paketo-buildpacks/go"]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["web"]
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 1024
+
+[processes]
+  web = "/layers/paketo-buildpacks_go-build/targets/bin/web"
+  collect-stats = "/layers/paketo-buildpacks_go-build/targets/bin/collect-stats"
+  read-river = "/layers/paketo-buildpacks_go-build/targets/bin/read-river"
+

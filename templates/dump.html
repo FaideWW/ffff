@@ -1,6 +1,6 @@
 {{define "title"}}ffff - Forbidden Flame/Flesh Finder{{end}} {{define "body"}}
 <table>
-  <thead>
+  <thead style="position: sticky; top: 0; background-color: #fff">
     <tr>
       <th>League</th>
       <th>Jewel type</th>
@@ -12,8 +12,8 @@
       <th>Median price</th>
       <th>Q3</th>
       <th>Max price</th>
+      <th>Window price</th>
       <th>Standard deviation</th>
-      <th>Exchange rate (chaos per div)</th>
       <th>Time generated</th>
     </tr>
   </thead>
@@ -23,15 +23,20 @@
       <td>{{ .League }}</td>
       <td>{{ .JewelType }}</td>
       <td>{{ .JewelClass }}</td>
-      <td>{{ .AllocatedNode }}</td>
+      <td>
+        <a
+          href="/dump/jewel/{{ .League }}/{{ .JewelType }}/{{ .AllocatedNode }}"
+          >{{ .AllocatedNode }}</a
+        >
+      </td>
       <td>{{ .NumListed }}</td>
       <td>{{ .MinPrice }}</td>
       <td>{{ .FirstQuartilePrice }}</td>
       <td>{{ .MedianPrice }}</td>
       <td>{{ .ThirdQuartilePrice }}</td>
       <td>{{ .MaxPrice }}</td>
-      <td>{{ .Stddev }}</td>
-      <td>{{ .ExchangeRate }}</td>
+      <td>{{ .WindowPrice }}</td>
+      <td>{{ printf "%.2f" .Stddev }}</td>
       <td>{{ .GeneratedAt.Format "Jan 02, 2006 3:04 PM" }}</td>
     </tr>
     {{ end}}
