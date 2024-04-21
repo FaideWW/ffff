@@ -14,13 +14,9 @@ import (
 
 	db "github.com/faideww/ffff/internal/db"
 	"github.com/faideww/ffff/internal/poeninja"
+	"github.com/faideww/ffff/internal/utils"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/exp/slices"
 )
-
-// TODO: track this on the river and fetch the live value from the database
-// when we run the stat calculations
-const CHAOS_PER_DIVINE = 150
 
 type Boxplot = [5]float64
 
@@ -50,18 +46,6 @@ func GetPriceInChaos(j *db.DBJewel, rates map[string]float64) (int, bool) {
 		return 0, false
 	}
 	return int(j.ListPriceAmount * float64(chaosEquiv)), true
-}
-
-func InsertSorted(arr []int, v int) []int {
-	pos, _ := slices.BinarySearch(arr, v)
-	arr = slices.Insert(arr, pos, v)
-	return arr
-}
-
-func InsertSortedFunc[S ~[]E, E any](arr S, v E, cmp func(E, E) int) S {
-	pos, _ := slices.BinarySearchFunc(arr, v, cmp)
-	arr = slices.Insert(arr, pos, v)
-	return arr
 }
 
 func calculateStandardDeviation(values []float64) float64 {
@@ -184,7 +168,7 @@ func AggregateStats() error {
 			if !keyOk {
 				jewelPrices[jKey] = []int{}
 			}
-			jewelPrices[jKey] = InsertSorted(jewelPrices[jKey], price)
+			jewelPrices[jKey] = utils.InsertSorted(jewelPrices[jKey], price)
 			seenCurrencies[j.League][j.ListPriceCurrency] = true
 		}
 	}
@@ -226,20 +210,6 @@ func AggregateStats() error {
 		}
 		setIdsByLeague[league] = setId
 	}
-
-	// var setId int
-	// exchangeRatesJson, err := json.Marshal(seenExchangeRates)
-	// if err != nil {
-	// 	l.Printf("failed to marshal exchange rates\n")
-	// 	return err
-	// }
-	// err = tx.QueryRow(ctx, "INSERT into snapshot_sets(league, exchangeRates, generatedAt) VALUES ($1,$2) RETURNING id", league, exchangeRatesJson, start).Scan(&setId)
-	// if err != nil {
-	// 	l.Printf("failed to create new snapshot set\n")
-	// 	return err
-	// }
-
-	// snapshots := make([]JewelSnapshot, len(jewelPrices))
 
 	batch := &pgx.Batch{}
 	for k, p := range jewelPrices {
@@ -299,37 +269,3 @@ func AggregateStats() error {
 
 	return nil
 }
-
-// type ByNode = map[string][]Price
-// type ByClass = map[string]ByNode
-// type ByType = map[string]ByClass
-// type ByLeague = map[string]ByType
-// func ensurePath(j *db.DBJewel, m map[string]ByLeague) {
-//   league, ok := m[j.League]
-
-//   if !ok {
-//     league = make(ByLeague)
-//     m[j.League] = league
-//   }
-
-//   jewelType, ok := m[j.League][j.JewelType]
-
-//   if !ok {
-//     jewelType := make(ByType)
-//     m[j.League][j.JewelType] = jewelType
-//   }
-
-//   jewelClass, ok := m[j.League][j.JewelType][j.JewelClass]
-
-//   if !ok {
-//     jewelClass := make(ByClass)
-//     m[j.League][j.JewelType][j.JewelClass] = jewelClass
-//   }
-
-//   allocatedNode, ok := m[j.League][j.JewelType][j.JewelClass][j.AllocatedNode]
-
-//   if !ok {
-//     allocatedNode := make([]Price)
-//     m[j.League][j.JewelType][j.JewelClass][j.AllocatedNode] = jewelClass
-//   }
-// }

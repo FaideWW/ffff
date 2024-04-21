@@ -101,7 +101,7 @@ func ConsumeRiver(f *CliFlags) {
 			rateLimitExceeded = true
 			retryS, retryErr := strconv.Atoi(resp.Header.Get("Retry-After"))
 			if retryErr != nil {
-				log.Fatal(err)
+				log.Fatal(retryErr)
 			}
 			nextWaitMs = retryS * 1000
 		case 200:
