@@ -116,11 +116,11 @@ func ConsumeRiver(f *CliFlags) {
 			policyValues := strings.Split(resp.Header.Get(policyHeader), ":")
 			maxHits, maxHitsErr := strconv.Atoi(policyValues[0])
 			if maxHitsErr != nil {
-				log.Fatal(err)
+				log.Fatal(maxHitsErr)
 			}
 			periodS, periodErr := strconv.Atoi(policyValues[1])
 			if periodErr != nil {
-				log.Fatal(err)
+				log.Fatal(periodErr)
 			}
 
 			ruleIntervalMs := (periodS * 1000) / maxHits
