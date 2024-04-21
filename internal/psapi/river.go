@@ -3,6 +3,7 @@ package psapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -83,6 +84,7 @@ func ConsumeRiver(f *CliFlags) {
 		resp, err := client.Do(req)
 		reqHandleStart := time.Now()
 		if err != nil {
+			l.Printf("request errored out: %s\n", err)
 			if resp != nil {
 				l.Printf("Request failed: %s\n", resp.Status)
 				for k, v := range resp.Header {
@@ -244,6 +246,8 @@ func CalculateRiverDrift(head string, current string) (int, error) {
 	currentShards := strings.Split(current, "-")
 
 	if len(headShards) != len(currentShards) {
+		fmt.Printf("head: %s\n", head)
+		fmt.Printf("current: %s\n", current)
 		return 0, errors.New("change ids have different number of shards")
 	}
 
