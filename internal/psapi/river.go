@@ -39,7 +39,6 @@ func ConsumeRiver(f *CliFlags) {
 		l.Printf("args: %+v\n", f)
 		if f.StartFromHead {
 			l.Printf("fetching latest id from API\n")
-			var err error
 			nextCursor, err = poeninja.GetLatestPSChangeId(client)
 			if err != nil {
 				log.Fatal(err)
@@ -47,7 +46,7 @@ func ConsumeRiver(f *CliFlags) {
 		} else {
 			l.Printf("resuming from last changeset id\n")
 			row := dbHandle.QueryRow(context.Background(), "SELECT nextChangeId FROM changesets ORDER BY processedAt DESC LIMIT 1")
-			err := row.Scan(&nextCursor)
+			err = row.Scan(&nextCursor)
 			if err != nil {
 
 				if errors.Is(err, pgx.ErrNoRows) {
@@ -58,7 +57,7 @@ func ConsumeRiver(f *CliFlags) {
 		}
 	} else if f.StartFromHead {
 		if err != nil {
-			log.Fatal(errors.New("Both startFromHead and INITIAL_CHANGE_ID were set, this is probably not intended. exiting"))
+			log.Fatal(errors.New("both startFromHead and INITIAL_CHANGE_ID were set, this is probably not intended. exiting"))
 		}
 	}
 	l.Printf("Starting change id: %s\n", nextCursor)
@@ -84,23 +83,26 @@ func ConsumeRiver(f *CliFlags) {
 		resp, err := client.Do(req)
 		reqHandleStart := time.Now()
 		if err != nil {
-			l.Printf("Server returned %s\n", resp.Status)
-			for k, v := range resp.Header {
-				l.Printf("  %s=%s\n", k, v)
+			if resp != nil {
+				l.Printf("Request failed: %s\n", resp.Status)
+				for k, v := range resp.Header {
+					l.Printf("  %s=%s\n", k, v)
+				}
 			}
 			log.Fatal(err)
 		}
 
 		rateLimitExceeded := false
 		// Handle rate limit
-		if resp.StatusCode == 429 {
+		switch resp.StatusCode {
+		case 429:
 			rateLimitExceeded = true
-			retryS, err := strconv.Atoi(resp.Header.Get("Retry-After"))
-			if err != nil {
+			retryS, retryErr := strconv.Atoi(resp.Header.Get("Retry-After"))
+			if retryErr != nil {
 				log.Fatal(err)
 			}
 			nextWaitMs = retryS * 1000
-		} else if resp.StatusCode == 200 {
+		case 200:
 			nextWaitMs = 0
 		}
 
@@ -110,12 +112,12 @@ func ConsumeRiver(f *CliFlags) {
 		for _, rule := range rateLimitRules {
 			policyHeader := "x-rate-limit-" + rule
 			policyValues := strings.Split(resp.Header.Get(policyHeader), ":")
-			maxHits, err := strconv.Atoi(policyValues[0])
-			if err != nil {
+			maxHits, maxHitsErr := strconv.Atoi(policyValues[0])
+			if maxHitsErr != nil {
 				log.Fatal(err)
 			}
-			periodS, err := strconv.Atoi(policyValues[1])
-			if err != nil {
+			periodS, periodErr := strconv.Atoi(policyValues[1])
+			if periodErr != nil {
 				log.Fatal(err)
 			}
 
@@ -137,6 +139,16 @@ func ConsumeRiver(f *CliFlags) {
 			nextWaitMs = 60
 		}
 
+		type HeadResponse struct {
+			id  string
+			err error
+		}
+		headCh := make(chan HeadResponse, 1)
+		go func(ch chan HeadResponse) {
+			res, err := poeninja.GetLatestPSChangeId(client)
+			ch <- HeadResponse{res, err}
+		}(headCh)
+
 		decodeStart := time.Now()
 		tabs, decodeErr := FindFFJewels(resp.Body, l, currentCursor)
 		if decodeErr != nil && decodeErr != io.EOF {
@@ -157,7 +169,7 @@ func ConsumeRiver(f *CliFlags) {
 			backoffs = 0
 			dbStart := time.Now()
 			// TODO: make this a goroutine? or if it's really slow, add a message broker here
-			err := UpdateDb(ctx, dbHandle, tabs)
+			err = UpdateDb(ctx, dbHandle, tabs)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -167,17 +179,38 @@ func ConsumeRiver(f *CliFlags) {
 
 		reqHandleEnd := time.Since(reqHandleStart)
 
+		headRes := <-headCh
+		if headRes.err != nil {
+			l.Printf("could not fetch latest change id: %s\n", headRes.err)
+			log.Fatal(headRes.err)
+		}
+
+		// calculate drift from the river head
+		drift, err := CalculateRiverDrift(headRes.id, currentCursor)
+		if err != nil {
+			l.Printf("failed to calculate river drift: %s\n", err)
+			log.Fatal(err)
+		}
+
 		if len(tabs) > 0 {
 			c := db.DBChangeset{
 				ChangeId:     currentCursor,
 				NextChangeId: nextCursor,
 				StashCount:   len(tabs),
 				// TODO: make sure all timestamps are consistent
-				ProcessedAt: decodeStart,
-				TimeTakenMs: reqHandleEnd.Milliseconds(),
+				ProcessedAt:   decodeStart,
+				TimeTakenMs:   reqHandleEnd.Milliseconds(),
+				DriftFromHead: drift,
 			}
 
-			_, err = dbHandle.Exec(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken) VALUES ($1,$2,$3,$4,$5)", c.ChangeId, c.NextChangeId, c.StashCount, c.ProcessedAt, c.TimeTakenMs)
+			_, err = dbHandle.Exec(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken,driftFromHead) VALUES (@changeId,@nextChangeId,@stashCount,@processedAt,@timeTaken,@driftFromHead)", pgx.NamedArgs{
+				"changeId":      c.ChangeId,
+				"nextChangeId":  c.NextChangeId,
+				"stashCount":    c.StashCount,
+				"processedAt":   c.ProcessedAt,
+				"timeTaken":     c.TimeTakenMs,
+				"driftFromHead": c.DriftFromHead,
+			})
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -204,4 +237,38 @@ func IntPow(n, m int) int {
 		result *= n
 	}
 	return result
+}
+
+func CalculateRiverDrift(head string, current string) (int, error) {
+	headShards := strings.Split(head, "-")
+	currentShards := strings.Split(current, "-")
+
+	if len(headShards) != len(currentShards) {
+		return 0, errors.New("change ids have different number of shards")
+	}
+
+	headInts := make([]int64, len(headShards))
+	for i, s := range headShards {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		headInts[i] = n
+	}
+
+	currentInts := make([]int64, len(currentShards))
+	for i, s := range currentShards {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		currentInts[i] = n
+	}
+
+	sum := 0
+	for i := 0; i < len(headInts); i++ {
+		sum += int(headInts[i] - currentInts[i])
+	}
+
+	return sum, nil
 }

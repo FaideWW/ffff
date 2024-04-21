@@ -159,7 +159,7 @@ func GetLatestChangeIdGGG(client *http.Client) (string, error) {
 		Psapi string `json:"psapi"`
 	}
 
-	req, err := http.NewRequest("GET", "https://www.pathofexile.com/api/trade/data/change-ids", nil)
+	req, _ := http.NewRequest("GET", "https://www.pathofexile.com/api/trade/data/change-ids", nil)
 	req.Header.Add("User-Agent", os.Getenv("GGG_USERAGENT"))
 	resp, err := client.Do(req)
 	if err != nil {
@@ -230,7 +230,7 @@ func FindPrice(item *RawItem, s *RawStashTab) (Price, error) {
 func ParsePrice(str string) (Price, error) {
 	components := strings.Split(str, " ")
 	if len(components) != 2 {
-		return Price{}, errors.New("Could not parse price")
+		return Price{}, errors.New("could not parse price")
 	}
 
 	priceValue, err := strconv.ParseFloat(components[0], 64)

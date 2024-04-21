@@ -44,7 +44,7 @@ func GetLatestPSChangeId(client *http.Client) (string, error) {
 		NextChangeId string `json:"next_change_id"`
 	}
 
-	req, err := http.NewRequest("GET", "https://poe.ninja/api/data/getstats", nil)
+	req, _ := http.NewRequest("GET", "https://poe.ninja/api/data/getstats", nil)
 	// req.Header.Add("User-Agent", os.Getenv("GGG_USERAGENT"))
 	resp, err := client.Do(req)
 	// bodyBytes, _ := io.ReadAll(resp.Body)
@@ -79,7 +79,7 @@ type RawCurrencyDetail struct {
 func GetExchangeRates(client *http.Client, league string) (map[string]float64, error) {
 	start := time.Now()
 	fmt.Printf("fetching currency data from poe.ninja\n")
-	req, err := http.NewRequest("GET", "https://poe.ninja/api/data/currencyoverview?league="+league+"&type=Currency", nil)
+	req, _ := http.NewRequest("GET", "https://poe.ninja/api/data/currencyoverview?league="+league+"&type=Currency", nil)
 	// req.Header.Add("User-Agent", os.Getenv("GGG_USERAGENT"))
 	resp, err := client.Do(req)
 	// bodyBytes, _ := io.ReadAll(resp.Body)

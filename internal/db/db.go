@@ -31,16 +31,18 @@ type DBJewel struct {
 }
 
 type DBChangeset struct {
-	Id           int       `db:"id"`
-	ChangeId     string    `db:"changeId"`
-	NextChangeId string    `db:"nextChangeId"`
-	StashCount   int       `db:"stashCount"`
-	ProcessedAt  time.Time `db:"processedAt"`
-	TimeTakenMs  int64     `db:"timeTaken"`
+	Id            int       `db:"id"`
+	ChangeId      string    `db:"changeId"`
+	NextChangeId  string    `db:"nextChangeId"`
+	StashCount    int       `db:"stashCount"`
+	ProcessedAt   time.Time `db:"processedAt"`
+	TimeTakenMs   int64     `db:"timeTaken"`
+	DriftFromHead int       `db:"driftFromHead"`
 }
 
 type DBSnapshotSet struct {
 	Id            int                `db:"id"`
+	League        string             `db:"league"`
 	ExchangeRates map[string]float64 `db:"exchangeRates"`
 	GeneratedAt   time.Time          `db:"generatedAt"`
 }
@@ -50,7 +52,6 @@ type DBJewelSnapshot struct {
 	SetId              int       `db:"setId"`
 	JewelType          string    `db:"jewelType"`
 	JewelClass         string    `db:"jewelClass"`
-	League             string    `db:"league"`
 	AllocatedNode      string    `db:"allocatedNode"`
 	MinPrice           float64   `db:"minPrice"`
 	FirstQuartilePrice float64   `db:"firstQuartilePrice"`

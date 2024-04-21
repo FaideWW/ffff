@@ -57,7 +57,14 @@ func UpdateDb(ctx context.Context, dbHandle *pgxpool.Pool, stashes []StashSnapsh
 		}
 	}
 
-	rows, err := tx.Query(ctx, SELECT_JEWELS_QUERY, changesetStashIds)
+	rows, _ := tx.Query(ctx, SELECT_JEWELS_QUERY, changesetStashIds)
+	// if err != nil {
+	// l.Printf("failed once\n")
+	// 	rows, err = tx.Query(ctx, SELECT_JEWELS_QUERY, changesetStashIds)
+	// if err != nil {
+	// l.Printf("failed again\n")
+	// }
+	// }
 	defer rows.Close()
 
 	checkedJewels := make(map[string]bool)

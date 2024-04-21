@@ -73,7 +73,7 @@ func calculateStandardDeviation(values []float64) float64 {
 	// calculate standard deviation
 	sumDeviation := 0.0
 	for _, v := range values {
-		sumDeviation += math.Pow(v-median, 2)
+		sumDeviation += (v - median) * (v - median)
 	}
 	return math.Sqrt(sumDeviation / float64(n))
 }
@@ -101,7 +101,7 @@ func calculateWindowPrice(prices []int, boxplot [5]float64, stddev float64) floa
 	filteredPrices := []int{}
 
 	for _, p := range prices {
-		if float64(p) >= meanMinusOne && float64(p) <= meanPlusOne {
+		if float64(p) >= meanMinusOne && float64(p) <= meanPlusOne && p >= 1 {
 			filteredPrices = append(filteredPrices, p)
 		}
 	}
@@ -128,7 +128,7 @@ func AggregateStats() error {
 		log.Fatal("failed to create prof file", err)
 	}
 	defer f.Close()
-	if err := pprof.StartCPUProfile(f); err != nil {
+	if err = pprof.StartCPUProfile(f); err != nil {
 		log.Fatal("failed to start profile", err)
 	}
 	defer pprof.StopCPUProfile()
@@ -147,8 +147,8 @@ func AggregateStats() error {
 
 	exchangeRates := make(map[string]map[string]float64, len(leagues))
 	for _, league := range leagues {
-		rates, err := poeninja.GetExchangeRates(client, league)
-		if err != nil {
+		rates, ratesErr := poeninja.GetExchangeRates(client, league)
+		if ratesErr != nil {
 			l.Printf("Failed to retrieve exchange rates for league %s\n", league)
 			return err
 		}
@@ -199,30 +199,45 @@ func AggregateStats() error {
 	defer tx.Rollback(ctx)
 
 	fmt.Printf("seenCurrencies:%+v\n", seenCurrencies)
-	seenExchangeRates := make(map[string]map[string]float64)
+	// seenExchangeRates := make(map[string]map[string]float64)
+	setIdsByLeague := make(map[string]int)
 	for league, rates := range seenCurrencies {
+		leagueRates := make(map[string]float64)
 		for currency, cOk := range rates {
 			if cOk {
-				_, rOk := seenExchangeRates[league]
-				if !rOk {
-					seenExchangeRates[league] = make(map[string]float64)
-				}
-				seenExchangeRates[league][currency] = exchangeRates[league][currency]
+				leagueRates[currency] = exchangeRates[league][currency]
 			}
 		}
+		var setId int
+		exchangeRatesJson, marshalErr := json.Marshal(leagueRates)
+		if marshalErr != nil {
+			l.Printf("failed to marshal exchange rates\n")
+			return err
+		}
+		err = tx.QueryRow(ctx, "INSERT INTO snapshot_sets(league, exchangeRates, generatedAt) VALUES (@league, @exchangeRates, @generatedAt) RETURNING id",
+			pgx.NamedArgs{
+				"league":        league,
+				"exchangeRates": exchangeRatesJson,
+				"generatedAt":   start,
+			}).Scan(&setId)
+		if err != nil {
+			l.Printf("failed to create new snapshot set\n")
+			return err
+		}
+		setIdsByLeague[league] = setId
 	}
 
-	var setId int
-	exchangeRatesJson, err := json.Marshal(seenExchangeRates)
-	if err != nil {
-		l.Printf("failed to marshal exchange rates\n")
-		return err
-	}
-	err = tx.QueryRow(ctx, "INSERT into snapshot_sets(exchangeRates, generatedAt) VALUES ($1,$2) RETURNING id", exchangeRatesJson, start).Scan(&setId)
-	if err != nil {
-		l.Printf("failed to create new snapshot set\n")
-		return err
-	}
+	// var setId int
+	// exchangeRatesJson, err := json.Marshal(seenExchangeRates)
+	// if err != nil {
+	// 	l.Printf("failed to marshal exchange rates\n")
+	// 	return err
+	// }
+	// err = tx.QueryRow(ctx, "INSERT into snapshot_sets(league, exchangeRates, generatedAt) VALUES ($1,$2) RETURNING id", league, exchangeRatesJson, start).Scan(&setId)
+	// if err != nil {
+	// 	l.Printf("failed to create new snapshot set\n")
+	// 	return err
+	// }
 
 	// snapshots := make([]JewelSnapshot, len(jewelPrices))
 
@@ -230,11 +245,10 @@ func AggregateStats() error {
 	for k, p := range jewelPrices {
 		jData := unhashJewelKey(k)
 		boxplot, stddev := calculatePriceSpread(p)
+		setId := setIdsByLeague[jData.League]
 		windowPrice := calculateWindowPrice(p, boxplot, stddev)
-		l.Printf("window price for [%s]%s - %s: %.2f\n", jData.League, jData.JewelType, jData.AllocatedNode, windowPrice)
 		s := db.DBJewelSnapshot{
 			SetId:              setId,
-			League:             jData.League,
 			JewelType:          jData.JewelType,
 			JewelClass:         jData.JewelClass,
 			AllocatedNode:      jData.AllocatedNode,
@@ -249,13 +263,27 @@ func AggregateStats() error {
 			GeneratedAt:        start,
 		}
 
-		batch.Queue("INSERT INTO snapshots(setId,league,jewelType,jewelClass,allocatedNode,minPrice,firstQuartilePrice,medianPrice,thirdQuartilePrice,maxPrice,windowPrice,stddev,numListed,generatedAt) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)", s.SetId, s.League, s.JewelType, s.JewelClass, s.AllocatedNode, s.MinPrice, s.FirstQuartilePrice, s.MedianPrice, s.ThirdQuartilePrice, s.MaxPrice, s.WindowPrice, s.Stddev, s.NumListed, s.GeneratedAt)
+		batch.Queue("INSERT INTO snapshots(setId,jewelType,jewelClass,allocatedNode,minPrice,firstQuartilePrice,medianPrice,thirdQuartilePrice,maxPrice,windowPrice,stddev,numListed,generatedAt) VALUES (@setId,@jewelType,@jewelClass,@allocatedNode,@minPrice,@q1Price,@medianPrice,@q3Price,@maxPrice,@windowPrice,@stddev,@numListed,@generatedAt)", pgx.NamedArgs{
+			"setId":         s.SetId,
+			"jewelType":     s.JewelType,
+			"jewelClass":    s.JewelClass,
+			"allocatedNode": s.AllocatedNode,
+			"minPrice":      s.MinPrice,
+			"q1Price":       s.FirstQuartilePrice,
+			"medianPrice":   s.MedianPrice,
+			"q3Price":       s.ThirdQuartilePrice,
+			"maxPrice":      s.MaxPrice,
+			"windowPrice":   s.WindowPrice,
+			"stddev":        s.Stddev,
+			"numListed":     s.NumListed,
+			"generatedAt":   s.GeneratedAt,
+		})
 		// l.Printf("%s: %v (%f)\n", k, boxplot, stddev)
 	}
 
 	results := tx.SendBatch(ctx, batch)
 	for range jewelPrices {
-		_, err := results.Exec()
+		_, err = results.Exec()
 		if err != nil {
 			fmt.Printf("failed to insert snapshot\n")
 			return err
