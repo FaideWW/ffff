@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/pprof"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,7 +79,7 @@ func calculatePriceSpread(prices []int) ([5]float64, float64) {
 	return [5]float64{pMin, pQ1, pMed, pQ3, pMax}, stddev
 }
 
-func calculateWindowPrice(prices []int, boxplot [5]float64, stddev float64) float64 {
+func calculateWindowPriceStddev(prices []int, boxplot [5]float64, stddev float64) float64 {
 	meanMinusOne := boxplot[2] - stddev
 	meanPlusOne := boxplot[2] + stddev
 
@@ -103,6 +104,26 @@ func calculateWindowPrice(prices []int, boxplot [5]float64, stddev float64) floa
 	}
 
 	return float64(doubleFilteredPrices[0])
+}
+
+const MAD_OUTLIER_COEF = 2
+
+func calculateWindowPriceMAD(prices []int) float64 {
+	median := prices[len(prices)/2]
+	deviations := make([]int, len(prices))
+	for i, p := range prices {
+		deviations[i] = (p - median)
+		if deviations[i] < 0 {
+			deviations[i] *= -1
+		}
+	}
+
+	slices.Sort(deviations)
+	medianDeviation := deviations[len(deviations)/2]
+
+	fmt.Printf(" prices: %+v\n", prices)
+	fmt.Printf(" median: %d - absolute deviation: %d\n", median, medianDeviation)
+	return 0
 }
 
 func AggregateStats() error {
@@ -216,7 +237,9 @@ func AggregateStats() error {
 		jData := unhashJewelKey(k)
 		boxplot, stddev := calculatePriceSpread(p)
 		setId := setIdsByLeague[jData.League]
-		windowPrice := calculateWindowPrice(p, boxplot, stddev)
+		windowPrice := calculateWindowPriceStddev(p, boxplot, stddev)
+		l.Printf("Calculating window price for %s\n", k)
+		calculateWindowPriceMAD(p)
 		s := db.DBJewelSnapshot{
 			SetId:              setId,
 			JewelType:          jData.JewelType,

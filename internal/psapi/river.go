@@ -29,7 +29,7 @@ func ConsumeRiver(f *CliFlags) {
 	// Init connection to the database
 	dbHandle, err := db.DBConnect(os.Getenv("PG_DB_CONNSTR"))
 	if err != nil {
-		log.Fatal(err)
+		log.Panic(err)
 	}
 	defer dbHandle.Close()
 
@@ -42,7 +42,7 @@ func ConsumeRiver(f *CliFlags) {
 			l.Printf("fetching latest id from API\n")
 			nextCursor, err = poeninja.GetLatestPSChangeId(client)
 			if err != nil {
-				log.Fatal(err)
+				log.Panic(err)
 			}
 		} else {
 			l.Printf("resuming from last changeset id\n")
@@ -53,12 +53,12 @@ func ConsumeRiver(f *CliFlags) {
 				if errors.Is(err, pgx.ErrNoRows) {
 					l.Printf("no changesets found to resume from; exiting\n")
 				}
-				log.Fatal(err)
+				log.Panic(err)
 			}
 		}
 	} else if f.StartFromHead {
 		if err != nil {
-			log.Fatal(errors.New("both startFromHead and INITIAL_CHANGE_ID were set, this is probably not intended. exiting"))
+			log.Panic(errors.New("both startFromHead and INITIAL_CHANGE_ID were set, this is probably not intended. exiting"))
 		}
 	}
 	l.Printf("Starting change id: %s\n", nextCursor)
@@ -77,10 +77,10 @@ func ConsumeRiver(f *CliFlags) {
 		req.Header.Add("User-Agent", os.Getenv("GGG_USERAGENT"))
 
 		if err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 
-		l.Println("Sending request")
+		l.Println("Polling psapi...")
 		resp, err := client.Do(req)
 		reqHandleStart := time.Now()
 		if err != nil {
@@ -91,17 +91,20 @@ func ConsumeRiver(f *CliFlags) {
 					l.Printf("  %s=%s\n", k, v)
 				}
 			}
-			log.Fatal(err)
+			log.Panic(err)
 		}
 
 		rateLimitExceeded := false
 		// Handle rate limit
 		switch resp.StatusCode {
 		case 429:
+			l.Printf("psapi returned 429 (Too Many Requests)\n")
 			rateLimitExceeded = true
 			retryS, retryErr := strconv.Atoi(resp.Header.Get("Retry-After"))
 			if retryErr != nil {
-				log.Fatal(retryErr)
+				l.Printf("failed to parse Retry-After header; panicing\n")
+				l.Printf("Headers:\n%+v\n", resp.Header)
+				log.Panic(retryErr)
 			}
 			nextWaitMs = retryS * 1000
 		case 200:
@@ -116,11 +119,15 @@ func ConsumeRiver(f *CliFlags) {
 			policyValues := strings.Split(resp.Header.Get(policyHeader), ":")
 			maxHits, maxHitsErr := strconv.Atoi(policyValues[0])
 			if maxHitsErr != nil {
-				log.Fatal(maxHitsErr)
+				l.Printf("Failed to decode rate-limit header - %s\n", maxHitsErr)
+				l.Printf("Headers:\n%+v\n", resp.Header)
+				log.Panic(maxHitsErr)
 			}
 			periodS, periodErr := strconv.Atoi(policyValues[1])
 			if periodErr != nil {
-				log.Fatal(periodErr)
+				l.Printf("Failed to decode rate-limit header - %s\n", periodErr)
+				l.Printf("Headers:\n%+v\n", resp.Header)
+				log.Panic(periodErr)
 			}
 
 			ruleIntervalMs := (periodS * 1000) / maxHits
@@ -154,7 +161,7 @@ func ConsumeRiver(f *CliFlags) {
 		decodeStart := time.Now()
 		tabs, decodeErr := FindFFJewels(resp.Body, l, currentCursor)
 		if decodeErr != nil && decodeErr != io.EOF {
-			log.Fatal(decodeErr)
+			log.Panic(decodeErr)
 		}
 		decodeEnd := time.Since(decodeStart)
 
@@ -173,7 +180,7 @@ func ConsumeRiver(f *CliFlags) {
 			// TODO: make this a goroutine? or if it's really slow, add a message broker here
 			err = UpdateDb(ctx, dbHandle, tabs)
 			if err != nil {
-				log.Fatal(err)
+				log.Panic(err)
 			}
 			dbEnd := time.Since(dbStart)
 			l.Printf("Response: database updated in %s\n", dbEnd)
@@ -184,14 +191,14 @@ func ConsumeRiver(f *CliFlags) {
 		headRes := <-headCh
 		if headRes.err != nil {
 			l.Printf("could not fetch latest change id: %s\n", headRes.err)
-			log.Fatal(headRes.err)
+			log.Panic(headRes.err)
 		}
 
 		// calculate drift from the river head
 		drift, err := CalculateRiverDrift(headRes.id, currentCursor)
 		if err != nil {
 			l.Printf("failed to calculate river drift: %s\n", err)
-			log.Fatal(err)
+			log.Panic(err)
 		}
 
 		if len(tabs) > 0 {
@@ -214,7 +221,7 @@ func ConsumeRiver(f *CliFlags) {
 				"driftFromHead": c.DriftFromHead,
 			})
 			if err != nil {
-				log.Fatal(err)
+				log.Panic(err)
 			}
 		}
 
