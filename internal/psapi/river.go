@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"strconv"
 	"strings"
@@ -121,12 +122,16 @@ func ConsumeRiver(f *CliFlags) {
 			if maxHitsErr != nil {
 				l.Printf("Failed to decode rate-limit header - %s\n", maxHitsErr)
 				l.Printf("Headers:\n%+v\n", resp.Header)
+				respDump, _ := httputil.DumpResponse(resp, false)
+				l.Printf("Full response: \n%+v\n", respDump)
 				log.Panic(maxHitsErr)
 			}
 			periodS, periodErr := strconv.Atoi(policyValues[1])
 			if periodErr != nil {
 				l.Printf("Failed to decode rate-limit header - %s\n", periodErr)
 				l.Printf("Headers:\n%+v\n", resp.Header)
+				respDump, _ := httputil.DumpResponse(resp, false)
+				l.Printf("Full response: \n%+v\n", respDump)
 				log.Panic(periodErr)
 			}
 
