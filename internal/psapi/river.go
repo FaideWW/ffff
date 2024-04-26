@@ -123,9 +123,10 @@ func ConsumeRiver(f *CliFlags) {
 				maxHits, maxHitsErr := strconv.Atoi(policyValues[0])
 				if maxHitsErr != nil {
 					l.Printf("Failed to decode rate-limit header - %s\n", maxHitsErr)
+					l.Printf("Response status: %s\n", resp.Status)
 					l.Printf("Headers:\n%+v\n", resp.Header)
 					respDump, _ := httputil.DumpResponse(resp, false)
-					l.Printf("Full response: \n%+v\n", respDump)
+					l.Printf("Full response: \n%s\n", string(respDump))
 					log.Panic(maxHitsErr)
 				}
 				periodS, periodErr := strconv.Atoi(policyValues[1])
