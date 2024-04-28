@@ -26,6 +26,11 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
+
+	collectStats()
+}
+
+func collectStats() {
 	err := stats.AggregateStats()
 
 	if err != nil {

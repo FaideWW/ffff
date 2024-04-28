@@ -1,14 +1,15 @@
 package stats
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"os"
-	"runtime/pprof"
 	"slices"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ import (
 )
 
 type Boxplot = [5]float64
+
+const DATE_CUTOFF = 48 * time.Hour
 
 func hashJewelKey(j *db.DBJewel) string {
 	return fmt.Sprintf("%s_%s_%s_%s", j.League, j.JewelType, j.JewelClass, j.AllocatedNode)
@@ -40,13 +43,17 @@ func GetPriceInChaos(j *db.DBJewel, rates map[string]float64) (int, bool) {
 		return int(j.ListPriceAmount), true
 	}
 
-	chaosEquiv, ok := rates[j.ListPriceCurrency]
+	chaosRate, ok := rates[j.ListPriceCurrency]
 	if !ok {
 		fmt.Printf("unsupported currency %s (%f) for %s - %s\n", j.ListPriceCurrency, j.ListPriceAmount, j.JewelType, j.AllocatedNode)
 		// unsupported currency, ignore
 		return 0, false
 	}
-	return int(j.ListPriceAmount * float64(chaosEquiv)), true
+	chaosEquiv := int(j.ListPriceAmount * float64(chaosRate))
+	if chaosEquiv == 0 {
+		return 0, false
+	}
+	return chaosEquiv, true
 }
 
 func calculateStandardDeviation(values []float64) float64 {
@@ -106,38 +113,123 @@ func calculateWindowPriceStddev(prices []int, boxplot [5]float64, stddev float64
 	return float64(doubleFilteredPrices[0])
 }
 
-const MAD_OUTLIER_COEF = 2
-
-func calculateWindowPriceMAD(prices []int) float64 {
+// https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h.htm - modified Z-score
+// https://eurekastatistics.com/using-the-median-absolute-deviation-to-find-outliers/
+func calculateWindowPriceMAD(prices []int, w *bufio.Writer) float64 {
 	median := prices[len(prices)/2]
-	deviations := make([]int, len(prices))
-	for i, p := range prices {
-		deviations[i] = (p - median)
-		if deviations[i] < 0 {
-			deviations[i] *= -1
+	var deviationsLeft []int
+	var deviationsRight []int
+	for _, p := range prices {
+		if p <= median {
+			diff := (median - p)
+			deviationsLeft = append(deviationsLeft, diff)
+		}
+		if p >= median {
+			diff := (p - median)
+			deviationsRight = append(deviationsRight, diff)
 		}
 	}
 
-	slices.Sort(deviations)
-	medianDeviation := deviations[len(deviations)/2]
+	slices.Sort(deviationsLeft)
+	slices.Sort(deviationsRight)
+	medianDeviationLeft := deviationsLeft[len(deviationsLeft)/2]
+	medianDeviationRight := deviationsRight[len(deviationsRight)/2]
+	// if medianDeviationLeft == 0 {
+	//   return float64(median)
+	// }
 
-	fmt.Printf(" prices: %+v\n", prices)
-	fmt.Printf(" median: %d - absolute deviation: %d\n", median, medianDeviation)
-	return 0
+	mThreshold := 2.0
+
+	distances := make([]float64, len(prices))
+	var inliers []int
+	for i, x := range prices {
+		mad := 0.0
+		if x != median {
+			if x < median {
+				mad = float64(medianDeviationLeft)
+			} else if x > median {
+				mad = float64(medianDeviationRight)
+			}
+			distance := (float64(x) - float64(median)) / mad
+			if distance < 0 {
+				distance *= -1
+			}
+			distances[i] = distance
+		} else {
+			distances[i] = 0.0
+		}
+		if distances[i] < mThreshold {
+			inliers = append(inliers, x)
+		}
+	}
+
+	fmt.Fprintf(w, " - prices: %+v\n", prices)
+	fmt.Fprintf(w, " - deviations left: %+v\n", deviationsLeft)
+	fmt.Fprintf(w, " - deviations right: %+v\n", deviationsRight)
+	fmt.Fprintf(w, " - median: %d - mad (left): %d - mad (right): %d\n", median, medianDeviationLeft, medianDeviationRight)
+	fmt.Fprintf(w, " - zscores: %+v\n", distances)
+	fmt.Fprintf(w, " - inliers: %+v\n", inliers)
+	if len(inliers) > 1 {
+		return float64(inliers[1])
+	}
+	return float64(inliers[0])
+}
+
+func calculateWindowPriceClustered(prices []int, w *bufio.Writer) (float64, float64, error) {
+	floatPrices := make([]float64, len(prices))
+	for i, p := range prices {
+		floatPrices[i] = float64(p)
+	}
+	clusters := HCluster(floatPrices)
+
+	var inliers [][]float64
+	var minClusterSize = 3
+
+	for len(inliers) == 0 && minClusterSize > 0 {
+		for _, c := range clusters {
+			if len(c) >= minClusterSize {
+				inliers = append(inliers, c)
+			}
+		}
+		minClusterSize--
+	}
+
+	if len(inliers) == 0 {
+		fmt.Printf("clusters: %+v\n", clusters)
+		fmt.Printf("inliers: %+v\n", inliers)
+		return 0, 0, errors.New("found 0 inliers")
+	}
+
+	for _, c := range inliers {
+		slices.Sort(c)
+	}
+
+	slices.SortFunc(inliers, func(a, b []float64) int {
+		res := a[0] - b[0]
+		if res < 0 {
+			return -1
+		} else if res == 0 {
+			return 0
+		} else {
+			return 1
+		}
+	})
+
+	fmt.Fprintf(w, " - prices: %+v\n", prices)
+	fmt.Fprintf(w, " - clusters: %+v\n", clusters)
+	fmt.Fprintf(w, " - inliers: %+v\n", inliers)
+
+	// Use the median value of the cluster
+	// Estimate confidence as a function of the cluster size
+	targetCluster := inliers[0]
+	const highConfClusterSize = 10.0
+	confidence := math.Min(float64(len(targetCluster))/highConfClusterSize, 1.0)
+
+	return targetCluster[len(targetCluster)/2], confidence, nil
 }
 
 func AggregateStats() error {
-	// performance profiling code
-	f, err := os.Create("collect-stats.prof")
-	if err != nil {
-		log.Fatal("failed to create prof file", err)
-	}
-	defer f.Close()
-	if err = pprof.StartCPUProfile(f); err != nil {
-		log.Fatal("failed to start profile", err)
-	}
-	defer pprof.StopCPUProfile()
-
+	start := time.Now()
 	l := log.New(os.Stdout, "[STATS]", log.Ldate|log.Ltime)
 	ctx := context.Background()
 	dbHandle, err := db.DBConnect(os.Getenv("PG_DB_CONNSTR"))
@@ -161,12 +253,13 @@ func AggregateStats() error {
 	}
 
 	jewelFetchStart := time.Now()
-	rows, _ := dbHandle.Query(ctx, "SELECT * FROM jewels WHERE league = any($1)", leagues)
+	dateCutoff := time.Now().Add(-DATE_CUTOFF)
+	rows, _ := dbHandle.Query(ctx, "SELECT * FROM jewels WHERE league = any($1) AND recordedat > ($2)", leagues, dateCutoff)
 	defer rows.Close()
 	jewelFetchElapsed := time.Since(jewelFetchStart)
 	l.Printf("db fetch took %.3fs\n", jewelFetchElapsed.Seconds())
 
-	start := time.Now()
+	aggStart := time.Now()
 
 	jewels, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.DBJewel])
 	if err != nil {
@@ -174,7 +267,7 @@ func AggregateStats() error {
 		return err
 	}
 
-	l.Printf("row marshalling took %.3fs\n", time.Since(start).Seconds())
+	l.Printf("row marshalling took %.3fs\n", time.Since(aggStart).Seconds())
 	jewelPrices := make(map[string][]int)
 	seenCurrencies := make(map[string]map[string]bool)
 	for _, j := range jewels {
@@ -232,14 +325,28 @@ func AggregateStats() error {
 		setIdsByLeague[league] = setId
 	}
 
+	debugFile, err := os.Create("stats.txt")
+	if err != nil {
+		l.Printf("failed to create file\n")
+		return err
+	}
+	defer debugFile.Close()
+	w := bufio.NewWriter(debugFile)
+	defer w.Flush()
+
 	batch := &pgx.Batch{}
 	for k, p := range jewelPrices {
 		jData := unhashJewelKey(k)
+		fmt.Fprintf(w, "%+v\n", jData)
 		boxplot, stddev := calculatePriceSpread(p)
 		setId := setIdsByLeague[jData.League]
-		windowPrice := calculateWindowPriceStddev(p, boxplot, stddev)
-		l.Printf("Calculating window price for %s\n", k)
-		calculateWindowPriceMAD(p)
+		// windowPrice := calculateWindowPriceStddev(p, boxplot, stddev)
+		// windowPrice := calculateWindowPriceMAD(p, w)
+		windowPrice, confidence, priceErr := calculateWindowPriceClustered(p, w)
+		if priceErr != nil {
+			return priceErr
+		}
+
 		s := db.DBJewelSnapshot{
 			SetId:              setId,
 			JewelType:          jData.JewelType,
@@ -251,6 +358,7 @@ func AggregateStats() error {
 			ThirdQuartilePrice: boxplot[3],
 			MaxPrice:           boxplot[4],
 			WindowPrice:        windowPrice,
+			Confidence:         confidence,
 			Stddev:             stddev,
 			NumListed:          len(p),
 			GeneratedAt:        start,
@@ -289,6 +397,8 @@ func AggregateStats() error {
 		l.Printf("failed to commit tx\n")
 		return err
 	}
+
+	l.Printf("Aggregated %d listings into %d entries in %.2fs\n", len(jewels), len(jewelPrices), time.Since(start).Seconds())
 
 	return nil
 }
