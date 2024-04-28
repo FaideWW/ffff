@@ -23,7 +23,7 @@ CREATE TABLE if not exists changesets(
   stashCount INTEGER NOT NULL,
   processedAt TIMESTAMPTZ NOT NULL,
   timeTaken INTEGER NOT NULL,
-  driftFromHead INTEGER NOT NULL DEFAULT 0,
+  driftFromHead INTEGER,
 );
 
 CREATE INDEX if not exists changesets_by_changeid ON changesets (changeId);
