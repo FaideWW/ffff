@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,13 +32,13 @@ type DBJewel struct {
 }
 
 type DBChangeset struct {
-	Id            int       `db:"id"`
-	ChangeId      string    `db:"changeId"`
-	NextChangeId  string    `db:"nextChangeId"`
-	StashCount    int       `db:"stashCount"`
-	ProcessedAt   time.Time `db:"processedAt"`
-	TimeTakenMs   int64     `db:"timeTaken"`
-	DriftFromHead int       `db:"driftFromHead"`
+	Id            int         `db:"id"`
+	ChangeId      string      `db:"changeId"`
+	NextChangeId  string      `db:"nextChangeId"`
+	StashCount    int         `db:"stashCount"`
+	ProcessedAt   time.Time   `db:"processedAt"`
+	TimeTakenMs   int64       `db:"timeTaken"`
+	DriftFromHead pgtype.Int4 `db:"driftFromHead"`
 }
 
 type DBSnapshotSet struct {
@@ -59,6 +60,7 @@ type DBJewelSnapshot struct {
 	ThirdQuartilePrice float64   `db:"thirdQuartilePrice"`
 	MaxPrice           float64   `db:"maxPrice"`
 	WindowPrice        float64   `db:"windowPrice"`
+	Confidence         float64   `db:"confidence"`
 	Stddev             float64   `db:"stddev"`
 	NumListed          int       `db:"numListed"`
 	GeneratedAt        time.Time `db:"generatedAt"`
