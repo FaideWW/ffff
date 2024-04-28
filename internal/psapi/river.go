@@ -16,6 +16,7 @@ import (
 	db "github.com/faideww/ffff/internal/db"
 	"github.com/faideww/ffff/internal/poeninja"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type CliFlags struct {
@@ -23,6 +24,7 @@ type CliFlags struct {
 }
 
 const MAX_BACKOFFS = 6
+const POENINJA_POLL_RATE = 60 // Every 60 iterations (~30s)
 
 func ConsumeRiver(f *CliFlags) {
 	l := log.New(os.Stdout, "", log.Ldate|log.Ltime)
@@ -66,6 +68,7 @@ func ConsumeRiver(f *CliFlags) {
 
 	nextWaitMs := 0
 	backoffs := 0
+	poeNinjaPollIndex := 0
 
 	for {
 		func() {
@@ -157,13 +160,18 @@ func ConsumeRiver(f *CliFlags) {
 			}
 
 			type HeadResponse struct {
-				id  string
-				err error
+				id   string
+				skip bool
+				err  error
 			}
 			headCh := make(chan HeadResponse, 1)
 			go func(ch chan HeadResponse) {
-				res, ninjaErr := poeninja.GetLatestPSChangeId(client)
-				ch <- HeadResponse{res, ninjaErr}
+				if poeNinjaPollIndex == 0 {
+					res, ninjaErr := poeninja.GetLatestPSChangeId(client)
+					ch <- HeadResponse{res, false, ninjaErr}
+				} else {
+					ch <- HeadResponse{"", true, nil}
+				}
 			}(headCh)
 
 			decodeStart := time.Now()
@@ -202,13 +210,21 @@ func ConsumeRiver(f *CliFlags) {
 				log.Panic(headRes.err)
 			}
 
-			// calculate drift from the river head
-			drift, err := CalculateRiverDrift(headRes.id, currentCursor)
-			if err != nil {
-				l.Printf("failed to calculate river drift: %s\n", err)
-				log.Panic(err)
-			}
+			var pgDrift pgtype.Int4
+			if !headRes.skip {
 
+				// calculate drift from the river head
+				drift, driftErr := CalculateRiverDrift(headRes.id, currentCursor)
+				if driftErr != nil {
+					l.Printf("failed to calculate river drift: %s\n", driftErr)
+					// log.Panic(driftErr)
+				}
+				pgDrift.Int32 = int32(drift)
+				pgDrift.Valid = true
+			} else {
+				pgDrift.Int32 = 0
+				pgDrift.Valid = false
+			}
 			if len(tabs) > 0 {
 				c := db.DBChangeset{
 					ChangeId:     currentCursor,
@@ -217,7 +233,7 @@ func ConsumeRiver(f *CliFlags) {
 					// TODO: make sure all timestamps are consistent
 					ProcessedAt:   decodeStart,
 					TimeTakenMs:   reqHandleEnd.Milliseconds(),
-					DriftFromHead: drift,
+					DriftFromHead: pgDrift,
 				}
 
 				_, err = dbHandle.Exec(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken,driftFromHead) VALUES (@changeId,@nextChangeId,@stashCount,@processedAt,@timeTaken,@driftFromHead)", pgx.NamedArgs{
@@ -241,6 +257,7 @@ func ConsumeRiver(f *CliFlags) {
 				l.Printf("waiting %s...\n", waitDuration)
 				time.Sleep(waitDuration)
 			}
+			poeNinjaPollIndex = (poeNinjaPollIndex + 1) % POENINJA_POLL_RATE
 		}()
 	}
 }
