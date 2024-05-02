@@ -24,6 +24,7 @@ type CliFlags struct {
 }
 
 const MAX_BACKOFFS = 6
+const MAX_RETRIES = 10
 const POENINJA_POLL_RATE = 60 // Every 60 iterations (~30s)
 
 func ConsumeRiver(f *CliFlags) {
@@ -69,6 +70,7 @@ func ConsumeRiver(f *CliFlags) {
 	nextWaitMs := 0
 	backoffs := 0
 	poeNinjaPollIndex := 0
+	retries := 0
 
 	for {
 		func() {
@@ -101,6 +103,7 @@ func ConsumeRiver(f *CliFlags) {
 			defer resp.Body.Close()
 
 			rateLimitExceeded := false
+			readOk := true
 			// Handle rate limit
 			switch resp.StatusCode {
 			case 429:
@@ -115,137 +118,150 @@ func ConsumeRiver(f *CliFlags) {
 				nextWaitMs = retryS * 1000
 			case 200:
 				nextWaitMs = 0
-			}
-
-			// decode rate limit policy
-			rateLimitRules := strings.Split(resp.Header.Get("x-rate-limit-rules"), ",")
-
-			for _, rule := range rateLimitRules {
-				policyHeader := "x-rate-limit-" + rule
-				policyValues := strings.Split(resp.Header.Get(policyHeader), ":")
-				maxHits, maxHitsErr := strconv.Atoi(policyValues[0])
-				if maxHitsErr != nil {
-					l.Printf("Failed to decode rate-limit header - %s\n", maxHitsErr)
-					l.Printf("Response status: %s\n", resp.Status)
-					l.Printf("Headers:\n%+v\n", resp.Header)
-					respDump, _ := httputil.DumpResponse(resp, false)
-					l.Printf("Full response: \n%s\n", string(respDump))
-					log.Panic(maxHitsErr)
-				}
-				periodS, periodErr := strconv.Atoi(policyValues[1])
-				if periodErr != nil {
-					l.Printf("Failed to decode rate-limit header - %s\n", periodErr)
-					l.Printf("Headers:\n%+v\n", resp.Header)
-					respDump, _ := httputil.DumpResponse(resp, false)
-					l.Printf("Full response: \n%+v\n", respDump)
-					log.Panic(periodErr)
+			case 503:
+				l.Printf("psapi returned 503 (Service Unavailable) - retrying after 5min\n")
+				readOk = false
+				nextWaitMs = 5 * 60 * 1000
+				retries++
+				if retries >= MAX_RETRIES {
+					log.Panic(errors.New("max retries reached - panicing"))
 				}
 
-				ruleIntervalMs := (periodS * 1000) / maxHits
+			}
 
-				if ruleIntervalMs > nextWaitMs {
-					nextWaitMs = ruleIntervalMs
+			reqHandleEnd := time.Duration(0)
+
+			if readOk {
+				// decode rate limit policy
+				rateLimitRules := strings.Split(resp.Header.Get("x-rate-limit-rules"), ",")
+
+				for _, rule := range rateLimitRules {
+					policyHeader := "x-rate-limit-" + rule
+					policyValues := strings.Split(resp.Header.Get(policyHeader), ":")
+					maxHits, maxHitsErr := strconv.Atoi(policyValues[0])
+					if maxHitsErr != nil {
+						l.Printf("Failed to decode rate-limit header - %s\n", maxHitsErr)
+						l.Printf("Response status: %s\n", resp.Status)
+						l.Printf("Headers:\n%+v\n", resp.Header)
+						respDump, _ := httputil.DumpResponse(resp, false)
+						l.Printf("Full response: \n%s\n", string(respDump))
+						log.Panic(maxHitsErr)
+					}
+					periodS, periodErr := strconv.Atoi(policyValues[1])
+					if periodErr != nil {
+						l.Printf("Failed to decode rate-limit header - %s\n", periodErr)
+						l.Printf("Headers:\n%+v\n", resp.Header)
+						respDump, _ := httputil.DumpResponse(resp, false)
+						l.Printf("Full response: \n%+v\n", respDump)
+						log.Panic(periodErr)
+					}
+
+					ruleIntervalMs := (periodS * 1000) / maxHits
+
+					if ruleIntervalMs > nextWaitMs {
+						nextWaitMs = ruleIntervalMs
+					}
 				}
-			}
 
-			currentCursor := nextCursor
-			nextCursor = resp.Header.Get("x-next-change-id")
-			if nextCursor != "" {
-				l.Printf("Next stash change id: %s\n", nextCursor)
-			}
-			if nextCursor == "" && nextWaitMs == 0 {
-				// We've reached the end, pause the reader (if it hasn't been paused already
-				l.Printf("No next change id\n")
-				nextWaitMs = 60
-			}
+				currentCursor := nextCursor
+				nextCursor = resp.Header.Get("x-next-change-id")
+				if nextCursor != "" {
+					l.Printf("Next stash change id: %s\n", nextCursor)
+				}
+				if nextCursor == "" && nextWaitMs == 0 {
+					// We've reached the end, pause the reader (if it hasn't been paused already
+					l.Printf("No next change id\n")
+					nextWaitMs = 60
+				}
 
-			type HeadResponse struct {
-				id   string
-				skip bool
-				err  error
-			}
-			headCh := make(chan HeadResponse, 1)
-			go func(ch chan HeadResponse) {
-				if poeNinjaPollIndex == 0 {
-					res, ninjaErr := poeninja.GetLatestPSChangeId(client)
-					ch <- HeadResponse{res, false, ninjaErr}
+				type HeadResponse struct {
+					id   string
+					skip bool
+					err  error
+				}
+				headCh := make(chan HeadResponse, 1)
+				go func(ch chan HeadResponse) {
+					if poeNinjaPollIndex == 0 {
+						res, ninjaErr := poeninja.GetLatestPSChangeId(client)
+						ch <- HeadResponse{res, false, ninjaErr}
+					} else {
+						ch <- HeadResponse{"", true, nil}
+					}
+				}(headCh)
+
+				decodeStart := time.Now()
+				tabs, decodeErr := FindFFJewels(resp.Body, l, currentCursor)
+				if decodeErr != nil && decodeErr != io.EOF {
+					log.Panic(decodeErr)
+				}
+				decodeEnd := time.Since(decodeStart)
+
+				l.Printf("Response: processed %d stash tabs in %s\n", len(tabs), decodeEnd)
+				ctx := context.TODO()
+
+				// Slowly back off if we're at the front of the river
+				if len(tabs) == 0 && !rateLimitExceeded {
+					nextWaitMs = nextWaitMs * IntPow(2, backoffs)
+					if backoffs < MAX_BACKOFFS {
+						backoffs++
+					}
+				} else if len(tabs) > 0 {
+					backoffs = 0
+					dbStart := time.Now()
+					// TODO: make this a goroutine? or if it's really slow, add a message broker here
+					err = UpdateDb(ctx, dbHandle, tabs)
+					if err != nil {
+						log.Panic(err)
+					}
+					dbEnd := time.Since(dbStart)
+					l.Printf("Response: database updated in %s\n", dbEnd)
+				}
+
+				reqHandleEnd = time.Since(reqHandleStart)
+
+				headRes := <-headCh
+				if headRes.err != nil {
+					l.Printf("could not fetch latest change id: %s\n", headRes.err)
+					log.Panic(headRes.err)
+				}
+
+				var pgDrift pgtype.Int4
+				if !headRes.skip {
+
+					// calculate drift from the river head
+					drift, driftErr := CalculateRiverDrift(headRes.id, currentCursor)
+					if driftErr != nil {
+						l.Printf("failed to calculate river drift: %s\n", driftErr)
+						// log.Panic(driftErr)
+					}
+					pgDrift.Int32 = int32(drift)
+					pgDrift.Valid = true
 				} else {
-					ch <- HeadResponse{"", true, nil}
+					pgDrift.Int32 = 0
+					pgDrift.Valid = false
 				}
-			}(headCh)
+				if len(tabs) > 0 {
+					c := db.DBChangeset{
+						ChangeId:     currentCursor,
+						NextChangeId: nextCursor,
+						StashCount:   len(tabs),
+						// TODO: make sure all timestamps are consistent
+						ProcessedAt:   decodeStart,
+						TimeTakenMs:   reqHandleEnd.Milliseconds(),
+						DriftFromHead: pgDrift,
+					}
 
-			decodeStart := time.Now()
-			tabs, decodeErr := FindFFJewels(resp.Body, l, currentCursor)
-			if decodeErr != nil && decodeErr != io.EOF {
-				log.Panic(decodeErr)
-			}
-			decodeEnd := time.Since(decodeStart)
-
-			l.Printf("Response: processed %d stash tabs in %s\n", len(tabs), decodeEnd)
-			ctx := context.TODO()
-
-			// Slowly back off if we're at the front of the river
-			if len(tabs) == 0 && !rateLimitExceeded {
-				nextWaitMs = nextWaitMs * IntPow(2, backoffs)
-				if backoffs < MAX_BACKOFFS {
-					backoffs++
-				}
-			} else if len(tabs) > 0 {
-				backoffs = 0
-				dbStart := time.Now()
-				// TODO: make this a goroutine? or if it's really slow, add a message broker here
-				err = UpdateDb(ctx, dbHandle, tabs)
-				if err != nil {
-					log.Panic(err)
-				}
-				dbEnd := time.Since(dbStart)
-				l.Printf("Response: database updated in %s\n", dbEnd)
-			}
-
-			reqHandleEnd := time.Since(reqHandleStart)
-
-			headRes := <-headCh
-			if headRes.err != nil {
-				l.Printf("could not fetch latest change id: %s\n", headRes.err)
-				log.Panic(headRes.err)
-			}
-
-			var pgDrift pgtype.Int4
-			if !headRes.skip {
-
-				// calculate drift from the river head
-				drift, driftErr := CalculateRiverDrift(headRes.id, currentCursor)
-				if driftErr != nil {
-					l.Printf("failed to calculate river drift: %s\n", driftErr)
-					// log.Panic(driftErr)
-				}
-				pgDrift.Int32 = int32(drift)
-				pgDrift.Valid = true
-			} else {
-				pgDrift.Int32 = 0
-				pgDrift.Valid = false
-			}
-			if len(tabs) > 0 {
-				c := db.DBChangeset{
-					ChangeId:     currentCursor,
-					NextChangeId: nextCursor,
-					StashCount:   len(tabs),
-					// TODO: make sure all timestamps are consistent
-					ProcessedAt:   decodeStart,
-					TimeTakenMs:   reqHandleEnd.Milliseconds(),
-					DriftFromHead: pgDrift,
-				}
-
-				_, err = dbHandle.Exec(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken,driftFromHead) VALUES (@changeId,@nextChangeId,@stashCount,@processedAt,@timeTaken,@driftFromHead)", pgx.NamedArgs{
-					"changeId":      c.ChangeId,
-					"nextChangeId":  c.NextChangeId,
-					"stashCount":    c.StashCount,
-					"processedAt":   c.ProcessedAt,
-					"timeTaken":     c.TimeTakenMs,
-					"driftFromHead": c.DriftFromHead,
-				})
-				if err != nil {
-					log.Panic(err)
+					_, err = dbHandle.Exec(ctx, "INSERT INTO changesets(changeId,nextChangeId,stashCount,processedAt,timeTaken,driftFromHead) VALUES (@changeId,@nextChangeId,@stashCount,@processedAt,@timeTaken,@driftFromHead)", pgx.NamedArgs{
+						"changeId":      c.ChangeId,
+						"nextChangeId":  c.NextChangeId,
+						"stashCount":    c.StashCount,
+						"processedAt":   c.ProcessedAt,
+						"timeTaken":     c.TimeTakenMs,
+						"driftFromHead": c.DriftFromHead,
+					})
+					if err != nil {
+						log.Panic(err)
+					}
 				}
 			}
 
