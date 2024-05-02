@@ -118,6 +118,7 @@ func ConsumeRiver(f *CliFlags) {
 				nextWaitMs = retryS * 1000
 			case 200:
 				nextWaitMs = 0
+				retries = 0
 			case 503:
 				l.Printf("psapi returned 503 (Service Unavailable) - retrying after 5min\n")
 				readOk = false
